@@ -45,4 +45,4 @@ V1 主数据位于项目外部共享目录 `C:/YangSu/00_Project/CA_mechanism/da
 - `docs/GGCP10_MEDIATION_EXTENSIONS.md`：2026-05 GGCP10 两方程扩展索引
 - `quality_reports/handoffs/2026-06-21_g185_method_upgrade_report_handoff.md`：当前 G185 真值位置、复现命令与解释边界
 
-项目尚未初始化 Git。任何删除文件、目录、输出、日志、计划或中间产物的操作都需要用户明确允许。
+项目已于 2026-07-13 初始化 Git，默认分支为 `main`，远端仓库为 `Hazard-cn/CA_soil_moisture`。任何删除文件、目录、输出、日志、计划或中间产物的操作都需要用户明确允许。
