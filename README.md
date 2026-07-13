@@ -2,20 +2,33 @@
 
 本仓库包含 V1-V6、GGCP10、G185 以及联合胁迫响应面等多个历史和并行分析分支。不同分支的样本、固定效应、估计量和图表不能直接混合引用；当前 G185 工作应从下列入口开始。
 
+## 仓库导航
+
+- [版本体系与当前入口](docs/VERSIONING.md)
+- [公开结果索引](docs/results/README.md)
+- [数据来源](docs/DATA_SOURCES_CN.md)
+- [变量字典](docs/VARIABLES.md)
+- [贡献与 Git 工作流](CONTRIBUTING.md)
+- [引用信息](CITATION.cff)
+
 ## 当前 G185 入口
+
+公开结果首先通过 [版本登记](docs/VERSIONING.md) 和 [结果索引](docs/results/README.md) 区分 scale 搜索、固定效应方法升级、旧方法 IE/DE/TE 修正、响应面敏感性和区域灌溉边界；这些入口使用不同估计对象，不能互相替代。
 
 截至 2026-07-10，旧线性两方程口径下的区域 IE/DE/TE 修正版是：
 
-- 完整审阅包：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/g185_old_method_region_tiede_redraw_bundle.zip`
-- 五图总览：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/figures_png/contact_sheet_corrected_old_method.png`
-- 核心结果表：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/tables/core_three_corrected_te_results.csv`
-- 15 个区域-胁迫组合及组件表：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/tables/region_tiede_delta_components.csv`
+- GitHub 可读摘要：`docs/results/g185-old-method-corrected/report.md`
+
+- 本地完整审阅包：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/g185_old_method_region_tiede_redraw_bundle.zip`
+- 本地五图总览：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/figures_png/contact_sheet_corrected_old_method.png`
+- 本地核心结果表：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/tables/core_three_corrected_te_results.csv`
+- 本地 15 个区域-胁迫组合及组件表：`quality_reports/agent_runs/2026-06-24_g185_old_method_region_tiede_redraw/tables/region_tiede_delta_components.csv`
 - 生成脚本：`scripts/python/export_g185_old_method_region_tiede_redraw.py`
 - 当前交接：`quality_reports/handoffs/2026-06-21_g185_method_upgrade_report_handoff.md`
 
 修正后的区域总缓冲关联为：东北干旱 1.85% [1.23, 2.56]、黄淮海高温 3.17% [2.07, 4.26]、黄淮海热干 2.43% [1.04, 3.87]。旧图中的 1.50%、3.27%、2.56% 来自控制同期根区土壤水分后的 `SR x hazard` 差异，属于 DE / residual component，不是 `TE = IE + DE` 定义下的 TE。
 
-2026-06-20 的方法升级报告仍保留为方法比较和异质性一致性检查入口：`quality_reports/agent_runs/2026-06-20_g185_method_upgrade_report/report.html`。其中机器学习结果只用于附录级结构一致性检查，不替代固定效应主结果。
+2026-06-20 的方法升级报告仍保留为方法比较和异质性一致性检查入口，GitHub 可读摘要为 `docs/results/g185-method-upgrade/report.md`，本地完整报告为 `quality_reports/agent_runs/2026-06-20_g185_method_upgrade_report/report.html`。其中机器学习结果只用于附录级结构一致性检查，不替代固定效应主结果。响应面审阅和区域灌溉边界分别见 `docs/results/g185-response-surface-v3/report.md` 与 `docs/results/g185-region-irrigation-boundary/report.md`。
 
 ## 估计量边界
 
@@ -45,4 +58,4 @@ V1 主数据位于项目外部共享目录 `C:/YangSu/00_Project/CA_mechanism/da
 - `docs/GGCP10_MEDIATION_EXTENSIONS.md`：2026-05 GGCP10 两方程扩展索引
 - `quality_reports/handoffs/2026-06-21_g185_method_upgrade_report_handoff.md`：当前 G185 真值位置、复现命令与解释边界
 
-项目已于 2026-07-13 初始化 Git，默认分支为 `main`，远端仓库为 `Hazard-cn/CA_soil_moisture`。任何删除文件、目录、输出、日志、计划或中间产物的操作都需要用户明确允许。
+项目已于 2026-07-13 初始化 Git，默认分支为 `main`，远端仓库为 `Hazard-cn/CA_soil_moisture`。数据不进入 Git；公开结果只使用 `docs/results/` 下的 Markdown 或自包含 HTML。非破坏性 Git/GitHub 操作按自动化工作流执行，任何文件删除、历史改写或 force push 仍需要明确允许。

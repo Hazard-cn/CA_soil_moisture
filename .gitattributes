@@ -1,5 +1,8 @@
 * text=auto
 
+.githooks/* text eol=lf
+*.sh text eol=lf
+
 *.dta binary
 *.parquet binary
 *.feather binary

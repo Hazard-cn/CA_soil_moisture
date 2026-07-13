@@ -1,0 +1,15 @@
+# 公开结果索引
+
+本目录是仓库唯一允许提交正式结果的目录。GitHub 代码审阅以 Markdown 为默认格式；只有需要保留完整排版或交互内容，并且图片、CSS 和 JavaScript 均已内嵌时，才发布自包含 HTML。原始数据、中间数据、CSV/DTA/Parquet、图片、PDF、压缩包和模型对象不进入本目录或 Git 历史。
+
+## 当前结果
+
+- [`scale-search-region-first`](scale-search-region-first/report.md)：256 个 Gxxx scale 的区域优先探索、208 个聚类复核候选和 G057/G185/G049 选择边界。
+- [`g185-method-upgrade`](g185-method-upgrade/report.md)：G185 固定效应 damage-avoidance margins 主结果与 ML 附录边界。
+- [`g185-old-method-corrected`](g185-old-method-corrected/report.md)：G185 旧线性两方程区域 IE/DE/TE 修正版摘要，更新至 2026-07-10。
+- [`g185-response-surface-v3`](g185-response-surface-v3/report.md)：低自由度 drought-heat response surface 的审阅与敏感性判定。
+- [`g185-region-irrigation-boundary`](g185-region-irrigation-boundary/report.md)：old-method 区域连续灌溉三重交互边界。
+
+## 发布要求
+
+每个结果目录使用 `docs/results/<canonical-id>/`，至少包含 `report.md` 或 `report.html`。报告必须写明 canonical ID、数据版、分析 scale、估计量、日期、生成脚本、解释边界及可复核位置。若结果改变正式结论，应同步更新 `docs/VERSIONING.md` 和 `quality_reports/version_registry.csv`。

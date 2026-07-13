@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 当前版本与结果索引
+    url: https://github.com/Hazard-cn/CA_soil_moisture/blob/main/docs/VERSIONING.md
+    about: 提交问题前先确认所引用的数据版、分析版和 G185 方法版。

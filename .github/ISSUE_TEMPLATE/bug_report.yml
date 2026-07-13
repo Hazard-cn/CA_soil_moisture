@@ -1,0 +1,37 @@
+name: 代码或复现问题
+description: 报告脚本错误、路径问题或与已登记结果不一致的情况
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 关联版本
+      description: 填写 VERSIONING.md 中的 canonical ID。
+    validations:
+      required: true
+  - type: input
+    id: script
+    attributes:
+      label: 脚本或文档路径
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: 运行命令与环境
+      description: 不要粘贴访问令牌、个人数据或未经脱敏的绝对路径。
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true

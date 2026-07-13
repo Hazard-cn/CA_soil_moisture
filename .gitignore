@@ -5,6 +5,26 @@
 .agents/
 .claude/
 .mcp.json
+.env
+.env.*
+!.env.example
+.git-credentials
+.netrc
+.npmrc
+.pypirc
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+config.local.*
+local.settings.json
+credentials*.json
+service-account*.json
+service_account*.json
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Data and generated analysis assets
 data/
@@ -27,7 +47,6 @@ quality_reports/*
 references/
 background_knowledge/
 reviews/
-/"reviews/
 
 # Historical self-contained workspaces and experiment snapshots
 CODEX/
@@ -75,10 +94,43 @@ scratch/
 *.tif
 *.tiff
 *.nc
+*.nc4
+*.hdf
+*.hdf4
 *.grd
 *.shp
 *.shx
 *.dbf
+*.csv
+*.tsv
+*.jsonl
+*.ndjson
+*.sqlite
+*.sqlite3
+*.db
+*.sav
+*.sas7bdat
+*.rds
+*.rda
+*.RData
+*.rdata
+*.fst
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.mat
+*.pt
+*.pth
+*.onnx
+*.tar
+*.gz
+*.tgz
+*.gpkg
+*.geojson
 
 # Root-level legacy runtime artifacts and API dumps
 /_*.log
@@ -98,3 +150,13 @@ Desktop.ini
 *.swp
 *.tmp
 *~
+
+# Durable public registry exception.
+!quality_reports/version_registry.csv
+
+# Published results: default deny, Markdown and self-contained HTML only.
+/docs/results/**
+!/docs/results/
+!/docs/results/**/
+!/docs/results/**/*.md
+!/docs/results/**/*.html
