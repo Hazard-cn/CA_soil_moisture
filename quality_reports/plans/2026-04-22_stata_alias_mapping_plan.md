@@ -1,0 +1,24 @@
+# V3 Stata Alias Mapping Plan
+
+- 目标：为 `data_build` 的 `v3` 导出增加确定性 Stata 短名体系，替换当前 `s10_export.py` 中按前 32 字符被动截断的逻辑，保证 `.dta` 在 Stata 中可稳定调用。
+- 约束：`CSV/Parquet` 保持原始长变量名不变；`.dta` 使用短名；同时导出原名到短名的 alias 对照表。
+- 作用范围：优先覆盖全部超长变量。当前超长变量仅有两类：`SM state` 与 `hotdrydays`。
+- 规则：
+  - source 压缩：`gleam_smrz -> gsr`，`gleam_sms -> gss`，`swsm_l1 -> sl1`，`swsm_l3 -> sl3`，`era5l_swvl1 -> e1`，`era5l_swvl3 -> e3`，`smrz -> gsr`，`sms -> gss`，`pr_lt1 -> pr1`
+  - metric 压缩：`drydays -> dd`，`wetdays -> wd`，`dryshare -> ds`，`wetshare -> ws`，`drydeficit -> ddf`，`wetexcess -> wex`，`hotdrydays -> hdy`
+  - state family 压缩：`baseline-local -> bl`，`pooled-state -> pl`，`maize-zone-state -> mz`
+  - window 压缩：`full -> f`，`v3pre30 -> p30`，`v3pm10 -> v10`，`hepm10 -> h10`，`v3he -> v3h`，`hema -> hma`
+- 例子：
+  - `drydeficit_mz_era5l_swvl3_le_p25_v3pre30 -> ddf_mz_e3_p25_p30`
+  - `wetexcess_pl_gleam_smrz_ge_p75_hema -> wex_pl_gsr_p75_hma`
+  - `hotdrydays_ge35_era5l_swvl3_p20_v3pm10 -> hdy_e3_t35_p20_v10`
+- 输出物：
+  - `data_build/output/tables/stata_alias_map_v3.csv`
+  - `temp/stata_alias_map_v3.md`
+  - `data_build/data/processed/data_v3_phenowindows.dta`
+  - `data_build/data/processed/data_v3_main.dta`
+- 验证：
+  - `.dta` 全部列名长度 `<= 32`
+  - `.dta` 列名全局唯一
+  - alias map 行数等于导出列数
+  - 所有超长变量都映射到非截断式、规则化短名

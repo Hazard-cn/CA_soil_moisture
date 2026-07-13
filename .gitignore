@@ -1,0 +1,100 @@
+# Local environments and agent/tool configuration
+.venv/
+.venv-ml/
+.AGENT/
+.agents/
+.claude/
+.mcp.json
+
+# Data and generated analysis assets
+data/
+data_build/data/
+data_build/output/
+temp/
+tmp/
+output/
+# Keep only durable governance documents from quality_reports in the public repo.
+quality_reports/*
+!quality_reports/plans/
+!quality_reports/plans/**
+!quality_reports/specs/
+!quality_reports/specs/**
+!quality_reports/handoffs/
+!quality_reports/handoffs/**
+!quality_reports/file_inventory/
+!quality_reports/file_inventory/**
+!quality_reports/version_registry.csv
+references/
+background_knowledge/
+reviews/
+/"reviews/
+
+# Historical self-contained workspaces and experiment snapshots
+CODEX/
+v3med_model8_20260415/
+
+# Future run, release-bundle, archive, and scratch locations
+runs/
+archive/
+scratch/
+
+# Runtime caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.Rhistory
+.RData
+.Rproj.user/
+
+# Logs and generated documents/media
+*.log
+*.zip
+*.7z
+*.pdf
+*.html
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.xlsx
+*.xls
+*.docx
+*.pptx
+*.aux
+*.nav
+*.snm
+*.toc
+*.synctex.gz
+
+# Large analytical and geospatial formats
+*.dta
+*.parquet
+*.feather
+*.tif
+*.tiff
+*.nc
+*.grd
+*.shp
+*.shx
+*.dbf
+
+# Root-level legacy runtime artifacts and API dumps
+/_*.log
+/stata.log
+/.log
+/P90
+/P95
+/RR_blueprints20260210.pdf
+/RR_blueprints_text.txt
+/g185_old_story_plot_data_bundle.zip
+/g185_v3_review_bundle.zip
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.tmp
+*~

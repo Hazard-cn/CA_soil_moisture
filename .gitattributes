@@ -1,0 +1,13 @@
+* text=auto
+
+*.dta binary
+*.parquet binary
+*.feather binary
+*.tif binary
+*.tiff binary
+*.nc binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary

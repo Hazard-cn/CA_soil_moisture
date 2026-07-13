@@ -1,0 +1,31 @@
+# GLEAM SM 干湿状态变量重做执行记录计划
+
+- 范围：仅重做 `GLEAM` 的 `SMrz` 与 `SMs` 干湿状态变量，不动 `SWSM` 和 `ERA5-Land`。
+- 新变量与现有 `v3` 并存，不覆盖旧 `GLEAM` 变量。
+- 新变量分两族：
+  - `md-event family`：窗口内 pooled local percentile + 干湿事件识别
+  - `window-baseline family`：按 `v3pre30 / v3he / hema` 的 baseline-local 阈值生成状态变量
+- `full season_new` 定义为 `v3pre30 + v3he + hema`，在 `V3` 和 `HE` 边界各去重 1 天，因此与现有 `win_full_days` 一致。
+- `md-event family` 输出：
+  - `mdduration_*`
+  - `mddurshare_*`
+  - `mdseverity_*`
+- `window-baseline family` 输出：
+  - `blduration_*`
+  - `bldurshare_*`
+  - `blseveritymean_*`
+  - `blseveritysum_*`
+- 小窗口保留 `v3pre30 / v3he / hema` 三套结果；同时额外生成 `_fullnew` 汇总变量。
+- 并表入口新增 `sm_gleam_rework_windows.csv`。
+- 文档生成器需要把 `SM-GLEAM` 分成：
+  - `legacy baseline-local`
+  - `legacy pooled-state`
+  - `legacy maize-zone-state`
+  - `md-event family`
+  - `window-baseline family`
+- 验证：
+  - `GLEAM 2013-2019` 两层可读
+  - 三窗阈值满足 `P10 <= P20 < P80 <= P90`
+  - `duration/durshare/severitymean/severitysum` 全部非负且满足预期单调性
+  - `_fullnew` 汇总使用三窗去重后口径
+  - `VARIABLES_v3.md` 与 `data_dictionary_v3.csv` 正确展示新家族
