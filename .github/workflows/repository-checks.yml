@@ -32,6 +32,15 @@ jobs:
       - name: Enforce repository publication policy
         run: python .github/scripts/check_repository_policy.py --source HEAD
 
+      - name: Validate reconstructed version lineage
+        run: python scripts/python/version_lineage.py validate --strict
+
+      - name: Check generated lineage documentation
+        run: python scripts/python/version_lineage.py build-docs --check
+
+      - name: Run lineage unit tests
+        run: python -m unittest discover -s tests -p "test_version_lineage.py"
+
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
         with:

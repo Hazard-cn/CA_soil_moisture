@@ -2,4 +2,36 @@
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
-python .github/scripts/check_repository_policy.py --source HEAD
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: pre-push requires a clean working tree and index." >&2
+    exit 1
+fi
+
+python .github/scripts/check_repository_policy.py --source index
+python scripts/python/version_lineage.py validate --strict
+python scripts/python/version_lineage.py build-docs --check
+python -m unittest discover -s tests -p "test_version_lineage.py"
+git diff --check
+
+zero_sha=0000000000000000000000000000000000000000
+checked_commits=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "$zero_sha" ]; then
+        continue
+    fi
+    if [ "$remote_sha" = "$zero_sha" ]; then
+        base_sha=$(git merge-base "$local_sha" origin/main 2>/dev/null || git merge-base "$local_sha" main)
+    else
+        base_sha=$remote_sha
+    fi
+    for commit in $(git rev-list --reverse "$base_sha..$local_sha"); do
+        case " $checked_commits " in
+            *" $commit "*) continue ;;
+        esac
+        python .github/scripts/check_repository_policy.py --source "$commit"
+        git show --check --format= "$commit"
+        checked_commits="$checked_commits $commit"
+    done
+done
