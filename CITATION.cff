@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it using the metadata below."
+title: "Straw-return buffering of compound climate-related maize yield losses"
+type: software
+authors:
+  - name: "Hazard-cn"
+repository-code: "https://github.com/Hazard-cn/CA_soil_moisture"
+url: "https://hazard-cn.github.io/CA_soil_moisture/"
+keywords:
+  - straw return
+  - soil moisture
+  - maize
+  - climate extremes
+  - panel data

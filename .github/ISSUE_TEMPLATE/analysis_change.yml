@@ -1,0 +1,30 @@
+name: 分析规格变更
+description: 记录新的研究问题、样本、估计量或稳健性检查
+title: "[Analysis] "
+labels: ["analysis"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: 研究问题与变更目的
+    validations:
+      required: true
+  - type: textarea
+    id: specification
+    attributes:
+      label: 数据版、样本、估计量和规格
+      description: 明确 canonical ID、固定效应、聚类层级和主要变量。
+    validations:
+      required: true
+  - type: textarea
+    id: scripts
+    attributes:
+      label: 计划修改或新增的脚本
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: 验证与验收标准
+    validations:
+      required: true

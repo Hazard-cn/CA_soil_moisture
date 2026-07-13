@@ -93,6 +93,19 @@ python scripts/python/filename.py
 
 ---
 
+## Git and GitHub Automation
+
+- Default authorization: after an in-scope change passes verification, the agent may automatically create a work branch, commit, push, open and merge a pull request, and create an approved research tag or release without requesting a second confirmation.
+- Stable branch: `main` contains reviewed states only. Use `work/<topic>` for changes and squash-merge through a pull request after the `integrity` check passes.
+- Destructive boundary: deleting files, branches or tags; rewriting history; and force-pushing still require an explicit user instruction for that specific destructive operation.
+- Commit format: `type(scope): subject`, with English type/scope and a concise Chinese or English subject.
+- Data boundary: never track raw data, processed data, intermediate panels, model objects, caches, logs or binary analytical outputs.
+- Result boundary: publish durable results only under `docs/results/<canonical-id>/` as Markdown or self-contained HTML. Markdown is the default GitHub review format.
+- Version boundary: distinguish `report-*`, `data-*`, `analysis-*`, `mechanism-*`, `area-*`, `scale-*` and `g185-*`; update `docs/VERSIONING.md` and `quality_reports/version_registry.csv` when an estimand or public claim changes.
+- Verification: run `python .github/scripts/check_repository_policy.py --source index`, language syntax checks and Git status/range checks before every automated push or merge.
+
+---
+
 ## Analysis Progress (Blueprint Steps 1-8)
 
 | Step | Description | Status | Script |
