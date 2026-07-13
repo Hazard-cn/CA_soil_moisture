@@ -5,6 +5,11 @@
 ## 仓库导航
 
 - [版本体系与当前入口](docs/VERSIONING.md)
+- [逐版本数据、方法与结果呈现变化](docs/VERSION_CHANGELOG.md)
+- [版本总表](docs/VERSION_MAP.md)
+- [数据谱系](docs/DATA_LINEAGE.md)
+- [对话与修改证据](docs/CONVERSATION_EVIDENCE.md)
+- [Git 前版本重建缺口](docs/PRE_GIT_RECONSTRUCTION_GAPS.md)
 - [公开结果索引](docs/results/README.md)
 - [数据来源](docs/DATA_SOURCES_CN.md)
 - [变量字典](docs/VARIABLES.md)
@@ -14,6 +19,8 @@
 ## 当前 G185 入口
 
 公开结果首先通过 [版本登记](docs/VERSIONING.md) 和 [结果索引](docs/results/README.md) 区分 scale 搜索、固定效应方法升级、旧方法 IE/DE/TE 修正、响应面敏感性和区域灌溉边界；这些入口使用不同估计对象，不能互相替代。
+
+2026 年各版本在数据输入、样本规则、变量定义、估计方法、推断方式和结果呈现上的逐项变化，统一见 [逐版本变化详表](docs/VERSION_CHANGELOG.md)。该表将逻辑版本与 artifact、sample rule、method、analysis run 和脱敏对话证据分别关联，避免把同名 `v3`、`v5` 或 `G185` 解释为同一版本链。
 
 截至 2026-07-10，旧线性两方程口径下的区域 IE/DE/TE 修正版是：
 

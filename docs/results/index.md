@@ -5,6 +5,11 @@ title: 公开结果索引
 
 # 公开结果索引
 
+各结果所使用的数据、样本、方法及呈现方式的逐版本变化，见 [2026 年逐版本变化详表](../VERSION_CHANGELOG.md)；缺失快照和被覆盖结果见 [Git 前版本重建缺口](../PRE_GIT_RECONSTRUCTION_GAPS.md)。
+
+- [V3 expanded 数据版本与运行 manifest](data-v3-expanded/report.md)
+- [GGCP10 aggregated 数据版本与运行 manifest](area-ggcp10-aggregated/report.md)
+- [G185 固定样本运行 manifest](scale-g185/run-manifest.md)
 - [GGCP10 区域优先 scale 搜索](scale-search-region-first/report.md)
 - [G185 方法升级结果](g185-method-upgrade/report.md)
 - [G185 旧方法区域 IE/DE/TE 修正版](g185-old-method-corrected/report.md)

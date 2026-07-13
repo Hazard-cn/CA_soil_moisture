@@ -9,6 +9,7 @@ import io
 import re
 import subprocess
 import sys
+from collections import Counter
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -62,6 +63,7 @@ FORBIDDEN_SUFFIXES = {
     ".joblib",
     ".jpeg",
     ".jpg",
+    ".json",
     ".jsonl",
     ".key",
     ".log",
@@ -106,7 +108,17 @@ FORBIDDEN_SUFFIXES = {
     ".zip",
 }
 
-ALLOWED_SPECIAL_FILES = {"quality_reports/version_registry.csv"}
+ALLOWED_SPECIAL_FILES = {
+    "quality_reports/version_registry.csv",
+    "quality_reports/lineage/analysis_runs.csv",
+    "quality_reports/lineage/artifact_registry.csv",
+    "quality_reports/lineage/change_events.csv",
+    "quality_reports/lineage/conversation_registry.csv",
+    "quality_reports/lineage/data_lineage.csv",
+    "quality_reports/lineage/method_registry.csv",
+    "quality_reports/lineage/sample_rules.csv",
+    "quality_reports/lineage/version_aliases.csv",
+}
 RESULT_PREFIX = "docs/results/"
 RESULT_SUFFIXES = {".md", ".html"}
 
@@ -139,7 +151,20 @@ SECRET_PATTERNS = {
     ),
 }
 
-MACHINE_PATH_PATTERN = re.compile(r"[A-Za-z]:[\\/]Users[\\/]", flags=re.IGNORECASE)
+MACHINE_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/][^\s\"'`<>|,;)\]}]+|"
+    r"/(?:Users|home)/[^\s\"'`<>|,;)\]}]+)",
+    flags=re.IGNORECASE,
+)
+RAW_TRANSCRIPT_PATTERN = re.compile(
+    r"(?ms)^\s*\{[^\r\n]{0,4000}\"type\"\s*:\s*"
+    r"\"(?:session_meta|response_item|turn_context|event_msg)\"[^\r\n]*\}\s*$"
+)
+RAW_TRANSCRIPT_IMPLEMENTATION_FILES = {
+    ".github/scripts/check_repository_policy.py",
+    "scripts/python/version_lineage.py",
+    "tests/test_version_lineage.py",
+}
 HTML_RESOURCE_ATTRIBUTES = {
     "audio": {"src"},
     "base": {"href"},
@@ -166,22 +191,29 @@ REGISTRY_FIELDS = (
     "canonical_id",
     "display_name",
     "namespace",
+    "version_kind",
     "date_start",
     "date_updated",
     "first_evidence_date",
+    "result_run_date",
+    "interpretation_updated_at",
     "status",
-    "confidence",
+    "current_truth_role",
+    "lineage_confidence",
     "parent_id",
+    "supersedes_ids",
     "context_ids",
-    "data_base_ids",
-    "input_variant",
     "main_change",
+    "data_change",
+    "method_change",
+    "result_presentation_change",
     "current_use",
     "evidence_visibility",
-    "evidence_paths",
+    "public_evidence_paths",
     "notes",
 )
 REGISTRY_STATUSES = {
+    "design_only",
     "current",
     "current_parallel",
     "current_data_base",
@@ -191,8 +223,19 @@ REGISTRY_STATUSES = {
     "exploratory",
     "reviewed_sensitivity",
     "reference",
+    "missing_snapshot",
+    "umbrella",
 }
-REGISTRY_NAMESPACES = {"report", "data", "analysis", "mechanism", "area", "scale", "g185"}
+REGISTRY_NAMESPACES = {
+    "design",
+    "report",
+    "data",
+    "analysis",
+    "mechanism",
+    "area",
+    "scale",
+    "g185",
+}
 
 
 def git_bytes(*args: str) -> bytes:
@@ -203,6 +246,29 @@ def git_bytes(*args: str) -> bytes:
         capture_output=True,
     )
     return result.stdout
+
+
+def optional_git_blob(ref: str, relative: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{relative}"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def baseline_main_ref() -> str | None:
+    for candidate in ("origin/main", "main"):
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return candidate
+    return None
 
 
 def tracked_files(source: str) -> list[str]:
@@ -290,9 +356,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
-        choices=("index", "HEAD"),
         default="index",
-        help="Git snapshot to inspect; pre-commit uses index and CI uses HEAD.",
+        help="Git snapshot to inspect: index, HEAD, or an explicit commit SHA/ref.",
     )
     return parser.parse_args()
 
@@ -325,13 +390,16 @@ def validate_version_registry(text: str) -> list[str]:
             "canonical_id",
             "display_name",
             "namespace",
+            "version_kind",
             "first_evidence_date",
             "status",
-            "confidence",
+            "lineage_confidence",
             "main_change",
+            "data_change",
+            "method_change",
+            "result_presentation_change",
             "current_use",
             "evidence_visibility",
-            "evidence_paths",
             "notes",
         ):
             if not row[field]:
@@ -340,15 +408,30 @@ def validate_version_registry(text: str) -> list[str]:
             errors.append(f"Invalid namespace on registry row {line_number}: {row['namespace']}")
         if row["status"] not in REGISTRY_STATUSES:
             errors.append(f"Invalid status on registry row {line_number}: {row['status']}")
-        if row["confidence"] not in {"confirmed", "mixed", "inferred"}:
-            errors.append(f"Invalid confidence on registry row {line_number}: {row['confidence']}")
+        if row["lineage_confidence"] not in {
+            "three-source-confirmed",
+            "two-source-supported",
+            "single-source-inferred",
+            "missing-snapshot",
+            "git-native",
+        }:
+            errors.append(
+                f"Invalid lineage_confidence on registry row {line_number}: "
+                f"{row['lineage_confidence']}"
+            )
         if row["evidence_visibility"] not in {"public", "local", "mixed"}:
             errors.append(
                 f"Invalid evidence_visibility on registry row {line_number}: "
                 f"{row['evidence_visibility']}"
             )
         parsed_dates: dict[str, date] = {}
-        for field in ("date_start", "date_updated", "first_evidence_date"):
+        for field in (
+            "date_start",
+            "date_updated",
+            "first_evidence_date",
+            "result_run_date",
+            "interpretation_updated_at",
+        ):
             if not row[field]:
                 continue
             try:
@@ -365,7 +448,7 @@ def validate_version_registry(text: str) -> list[str]:
             errors.append(f"date_updated precedes date_start on registry row {line_number}")
 
     for line_number, row in enumerate(rows, start=2):
-        for field in ("parent_id", "context_ids", "data_base_ids"):
+        for field in ("parent_id", "supersedes_ids", "context_ids"):
             for reference in filter(None, row[field].split("|")):
                 if reference not in ids:
                     errors.append(
@@ -378,13 +461,92 @@ def validate_version_registry(text: str) -> list[str]:
     return errors
 
 
+def validate_lineage_snapshot(texts: dict[str, str]) -> list[str]:
+    """Run the canonical cross-registry validator against the selected Git snapshot."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        from scripts.python import version_lineage as lineage
+    except (ImportError, OSError) as exc:
+        return [f"Cannot load lineage validator: {exc}"]
+
+    registries: dict[str, lineage.Registry] = {}
+    errors: list[str] = []
+    for name, fields in lineage.SCHEMAS.items():
+        relative = (
+            "quality_reports/version_registry.csv"
+            if name == "version_registry.csv"
+            else f"quality_reports/lineage/{name}"
+        )
+        text = texts.get(relative.casefold())
+        if text is None:
+            errors.append(f"Missing governance registry: {relative}")
+            continue
+        reader = csv.DictReader(io.StringIO(text, newline=""))
+        actual = tuple(reader.fieldnames or ())
+        if actual != fields:
+            errors.append(
+                f"Governance registry schema mismatch for {relative}: expected {fields}, got {actual}"
+            )
+            continue
+        rows = list(reader)
+        for line_number, row in enumerate(rows, start=2):
+            if None in row:
+                errors.append(f"Governance registry has extra columns: {relative}:{line_number}")
+                continue
+            for field, value in row.items():
+                if value != value.strip():
+                    errors.append(
+                        f"Governance registry has surrounding whitespace: "
+                        f"{relative}:{line_number}:{field}"
+                    )
+        registries[name] = lineage.Registry(name, fields, rows)
+
+    if errors:
+        return errors
+    return [f"Lineage: {error}" for error in lineage.validate_registries(registries)]
+
+
+def validate_snapshot_repo_uris(
+    texts: dict[str, str], tracked: set[str]
+) -> list[str]:
+    """Require every exact repo:// registry target to exist in the same Git tree."""
+    errors: list[str] = []
+    registry_paths = set(ALLOWED_SPECIAL_FILES)
+    for relative in sorted(registry_paths):
+        text = texts.get(relative.casefold())
+        if text is None:
+            continue
+        reader = csv.DictReader(io.StringIO(text, newline=""))
+        for line_number, row in enumerate(reader, start=2):
+            for field, value in row.items():
+                if not value:
+                    continue
+                for item in filter(None, re.split(r"[|;]", value)):
+                    if not re.fullmatch(r"repo://[^\s]+", item):
+                        continue
+                    target = item.removeprefix("repo://").casefold()
+                    if target not in tracked:
+                        errors.append(
+                            f"Missing repo URI target in snapshot: "
+                            f"{relative}:{line_number}:{field}: {item}"
+                        )
+    return errors
+
+
 def main() -> int:
     args = parse_args()
     errors: list[str] = []
     warnings: list[str] = []
-    files = tracked_files(args.source)
+    try:
+        files = tracked_files(args.source)
+    except subprocess.CalledProcessError as exc:
+        print(f"ERROR: invalid Git source {args.source}: {exc}", file=sys.stderr)
+        return 1
     python_count = 0
     texts: dict[str, str] = {}
+    baseline_ref = baseline_main_ref()
+    legacy_machine_path_files: list[str] = []
 
     for relative in files:
         normalized = relative.replace("\\", "/")
@@ -434,21 +596,48 @@ def main() -> int:
             if pattern.search(text):
                 errors.append(f"Possible {label} in {normalized}")
 
+        if (
+            folded not in RAW_TRANSCRIPT_IMPLEMENTATION_FILES
+            and RAW_TRANSCRIPT_PATTERN.search(text)
+        ):
+            errors.append(f"Possible raw conversation/session record in {normalized}")
+
         if folded.startswith(RESULT_PREFIX) and suffix == ".html":
             for asset in external_html_assets(text):
                 errors.append(f"HTML is not self-contained ({asset}) in {normalized}")
 
-        if MACHINE_PATH_PATTERN.search(text):
-            if folded in LEGACY_MACHINE_PATH_FILES:
-                warnings.append(f"Legacy machine-specific user path in {normalized}")
+        machine_paths = Counter(MACHINE_PATH_PATTERN.findall(text))
+        if machine_paths:
+            baseline_paths: Counter[str] = Counter()
+            if baseline_ref:
+                baseline_raw = optional_git_blob(baseline_ref, relative)
+                if baseline_raw is not None:
+                    try:
+                        baseline_text = baseline_raw.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        baseline_text = ""
+                    baseline_paths = Counter(MACHINE_PATH_PATTERN.findall(baseline_text))
+            new_paths = machine_paths - baseline_paths
+            if new_paths:
+                errors.append(f"New machine-specific absolute path in {normalized}")
+            elif folded in LEGACY_MACHINE_PATH_FILES or baseline_paths:
+                legacy_machine_path_files.append(normalized)
             else:
-                errors.append(f"New machine-specific user path in {normalized}")
+                errors.append(f"Machine-specific absolute path in {normalized}")
 
     registry_text = texts.get("quality_reports/version_registry.csv")
     if registry_text is None:
         errors.append("Missing quality_reports/version_registry.csv")
     else:
         errors.extend(validate_version_registry(registry_text))
+    errors.extend(validate_lineage_snapshot(texts))
+    errors.extend(validate_snapshot_repo_uris(texts, {item.casefold() for item in files}))
+
+    if legacy_machine_path_files:
+        warnings.append(
+            f"{len(legacy_machine_path_files)} tracked files retain unchanged legacy "
+            "machine-specific paths; no new absolute path was added"
+        )
 
     for warning in warnings:
         print(f"WARNING: {warning}")

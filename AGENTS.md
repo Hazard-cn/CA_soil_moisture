@@ -101,7 +101,10 @@ python scripts/python/filename.py
 - Commit format: `type(scope): subject`, with English type/scope and a concise Chinese or English subject.
 - Data boundary: never track raw data, processed data, intermediate panels, model objects, caches, logs or binary analytical outputs.
 - Result boundary: publish durable results only under `docs/results/<canonical-id>/` as Markdown or self-contained HTML. Markdown is the default GitHub review format.
-- Version boundary: distinguish `report-*`, `data-*`, `analysis-*`, `mechanism-*`, `area-*`, `scale-*` and `g185-*`; update `docs/VERSIONING.md` and `quality_reports/version_registry.csv` when an estimand or public claim changes.
+- Version boundary: distinguish `report-*`, `data-*`, `analysis-*`, `mechanism-*`, `area-*`, `scale-*` and `g185-*`; every version must separately document its data, method and result-presentation changes in `quality_reports/version_registry.csv` and the normalized lineage registries.
+- Run boundary: never overwrite a historical run and then treat it as the same version. A changed input hash, sample rule, estimand, method or public claim requires a new artifact/run ID and an updated result manifest.
+- Evidence boundary: Git-prehistory conversations are metadata evidence only. Commit thread IDs, decisions and command hashes when needed, but never raw conversations, JSONL exports or complete shell commands.
+- Documentation boundary: regenerate `docs/VERSION_MAP.md`, `docs/VERSION_CHANGELOG.md`, `docs/DATA_LINEAGE.md`, `docs/CONVERSATION_EVIDENCE.md` and `docs/PRE_GIT_RECONSTRUCTION_GAPS.md` after a lineage change.
 - Verification: run `python .github/scripts/check_repository_policy.py --source index`, language syntax checks and Git status/range checks before every automated push or merge.
 
 ---

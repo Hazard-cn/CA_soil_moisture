@@ -43,6 +43,8 @@ quality_reports/*
 !quality_reports/handoffs/**
 !quality_reports/file_inventory/
 !quality_reports/file_inventory/**
+!quality_reports/lineage/
+!quality_reports/lineage/**
 !quality_reports/version_registry.csv
 references/
 background_knowledge/
@@ -153,6 +155,8 @@ Desktop.ini
 
 # Durable public registry exception.
 !quality_reports/version_registry.csv
+!quality_reports/lineage/
+!quality_reports/lineage/**
 
 # Published results: default deny, Markdown and self-contained HTML only.
 /docs/results/**

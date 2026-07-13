@@ -52,12 +52,16 @@ title: 版本体系与当前入口
 
 ## 登记字段与状态词表
 
-Canonical ID 仅使用小写字母、数字、点号和连字符；显示名称单独记录在 `display_name`。`date_start`、`date_updated` 与 `first_evidence_date` 均使用 ISO `YYYY-MM-DD`，无法确认的日期留空，不以 `historical` 或月份值代替。`parent_id` 表示直接版本继承，`context_ids` 表示相关背景，二者不得合并解释。`data_base_ids` 只引用登记中已存在的 canonical ID，输入快照或修正前后口径写入 `input_variant`。`evidence_visibility` 使用 `public`、`local` 或 `mixed`，分别表示证据全部可在 GitHub 查看、仅保留在本地忽略目录，或两者兼有。
+Canonical ID 仅使用小写字母、数字、点号和连字符；显示名称单独记录在 `display_name`。`date_start`、`date_updated`、`first_evidence_date` 与 `result_run_date` 使用 ISO `YYYY-MM-DD`，无法确认的日期留空。`parent_id` 表示直接继承，`supersedes_ids` 表示明确取代，`context_ids` 只表示相关背景，三者不得混用。
 
-`status` 使用下列受控值：`current` 表示该命名空间的当前主入口；`current_parallel` 表示并行且不互相替代的当前入口；`current_data_base` 表示当前数据基础；`historical_latest` 表示历史报告线的最后版本；`historical` 表示仍需保留的历史节点；`superseded` 表示解释或实现已被后续版本替代；`exploratory` 表示探索性实验；`reviewed_sensitivity` 表示已经审阅但只作为敏感性证据；`reference` 表示选择、比较或数据来源参考。
+每个版本必须分别填写 `data_change`、`method_change` 和 `result_presentation_change`。数据字段应说明输入 artifact、样本规则、行数或变量定义变化；方法字段应说明 estimand、exposure、mediator、controls、固定效应、聚类或空间块、bootstrap 和 seed；结果呈现字段应说明表图或报告载体、数值或叙事口径、公开位置及被取代状态。没有变化时也必须明确写明“未变化”或“不适用”，不得留空。逐版本展开结果见 [`VERSION_CHANGELOG.md`](VERSION_CHANGELOG.md)。
+
+物理数据、代码和结果文件登记在 `artifact_registry.csv`，输入输出转换登记在 `data_lineage.csv`，虚拟样本登记在 `sample_rules.csv`，估计方法与运行分别登记在 `method_registry.csv` 和 `analysis_runs.csv`。对话和修改证据只保存脱敏 thread 元数据与命令哈希，不保存原始内容。
+
+`status` 使用受控值：`design_only` 表示未执行的研究设计；`current`、`current_parallel` 和 `current_data_base` 分别表示当前主入口、并行入口和数据基础；`historical_latest`、`historical`、`superseded` 表示历史状态；`exploratory`、`reviewed_sensitivity`、`reference` 表示探索、敏感性和参考用途；`missing_snapshot` 表示明确引用但物理快照缺失；`umbrella` 只用于组织组件，不能直接挂数值结论。
 
 ## 后续版本规则
 
 每个改变正式估计对象或公开结论的 PR 都应使用新的 canonical ID 或更新既有 ID，并同步版本登记和公开结果。工作分支使用 `work/<canonical-id>-<topic>`；正式标签使用 `research-<canonical-id>-YYYY.MM.DD`。GitHub Release 只在对应的 Markdown/HTML 结果已经进入 `docs/results/<canonical-id>/` 且 CI 通过后创建。
 
-完整机器可读登记位于 [`quality_reports/version_registry.csv`](../quality_reports/version_registry.csv)。`confidence=confirmed` 表示有直接文件证据，`mixed` 表示部分关系需要推断，`inferred` 表示主要依据命名或日期重建。
+完整逻辑版本登记位于 [`quality_reports/version_registry.csv`](../quality_reports/version_registry.csv)，规范化明细位于 `quality_reports/lineage/`。`lineage_confidence` 使用 `three-source-confirmed`、`two-source-supported`、`single-source-inferred`、`missing-snapshot` 或 `git-native`；证据等级描述谱系关系的可核验程度，不等同于因果识别或数值复现已经通过。
