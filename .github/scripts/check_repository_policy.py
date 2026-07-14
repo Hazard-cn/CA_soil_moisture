@@ -108,7 +108,15 @@ FORBIDDEN_SUFFIXES = {
     ".zip",
 }
 
-ALLOWED_SPECIAL_FILES = {
+MACHINE_READABLE_SCHEMA_FILES = {
+    # The portfolio design freezes exactly these three public JSON Schemas.
+    # No other JSON file or path receives an exception to the repository policy.
+    "docs/contracts/event_panel.schema.json",
+    "docs/contracts/run_manifest.schema.json",
+    "docs/contracts/threshold_grid.schema.json",
+}
+
+GOVERNANCE_REGISTRY_FILES = {
     "quality_reports/version_registry.csv",
     "quality_reports/lineage/analysis_runs.csv",
     "quality_reports/lineage/artifact_registry.csv",
@@ -119,6 +127,7 @@ ALLOWED_SPECIAL_FILES = {
     "quality_reports/lineage/sample_rules.csv",
     "quality_reports/lineage/version_aliases.csv",
 }
+ALLOWED_SPECIAL_FILES = GOVERNANCE_REGISTRY_FILES | MACHINE_READABLE_SCHEMA_FILES
 RESULT_PREFIX = "docs/results/"
 RESULT_SUFFIXES = {".md", ".html"}
 
@@ -512,7 +521,7 @@ def validate_snapshot_repo_uris(
 ) -> list[str]:
     """Require every exact repo:// registry target to exist in the same Git tree."""
     errors: list[str] = []
-    registry_paths = set(ALLOWED_SPECIAL_FILES)
+    registry_paths = set(GOVERNANCE_REGISTRY_FILES)
     for relative in sorted(registry_paths):
         text = texts.get(relative.casefold())
         if text is None:
@@ -547,6 +556,16 @@ def main() -> int:
     texts: dict[str, str] = {}
     baseline_ref = baseline_main_ref()
     legacy_machine_path_files: list[str] = []
+
+    # Fail closed if a future edit silently expands the JSON exception beyond
+    # the three frozen machine-readable contracts above.
+    json_exceptions = {
+        path for path in ALLOWED_SPECIAL_FILES if PurePosixPath(path).suffix.casefold() == ".json"
+    }
+    if json_exceptions != MACHINE_READABLE_SCHEMA_FILES:
+        errors.append(
+            "Policy configuration error: JSON exceptions must equal the three frozen contracts"
+        )
 
     for relative in files:
         normalized = relative.replace("\\", "/")

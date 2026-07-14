@@ -16,6 +16,10 @@ flowchart LR
   n_analysis_v3prhdsm_ready_dta["analysis-v3prhdsm-ready-dta\npresent"]
   n_analysis_v3proxy_ready_dta["analysis-v3proxy-ready-dta\npresent"]
   n_analysis_v3sub_ready_dta["analysis-v3sub-ready-dta\npresent"]
+  n_compound_event_precip_aligned_series["compound-event-precip-aligned-series\npresent"]
+  n_compound_event_smoke_panel_v2["compound-event-smoke-panel-v2\npresent"]
+  n_compound_event_smrz_aligned_series["compound-event-smrz-aligned-series\npresent"]
+  n_compound_event_tmax_aligned_series["compound-event-tmax-aligned-series\npresent"]
   n_data_v1_county_city["data-v1-county-city\npresent"]
   n_data_v1_locked_panel["data-v1-locked-panel\npresent"]
   n_data_v1_master["data-v1-master\npresent"]
@@ -41,6 +45,8 @@ flowchart LR
   n_mechanism_sm_state_wide_april_missing["mechanism-sm-state-wide-april-missing\nmissing"]
   n_mechanism_sm_state_wide_current["mechanism-sm-state-wide-current\npresent"]
   n_mechanism_v5drymed_ready_dta["mechanism-v5drymed-ready-dta\npresent"]
+  n_regional_threshold_grid_v1["regional-threshold-grid-v1\npresent"]
+  n_regional_threshold_maize_raster["regional-threshold-maize-raster\npresent"]
   n_data_v1_master -->|v1-add-county-city| n_data_v1_county_city
   n_data_v1_county_city -->|v1-phase0-lock| n_data_v1_locked_panel
   n_data_v1_master -->|v2-initial-climate-pipeline| n_data_v2_main_initial_missing
@@ -78,6 +84,12 @@ flowchart LR
   n_ggcp10_baseline_suite -->|g057-base-filter| n_g057_virtual_sample
   n_ggcp10_baseline_suite -->|g049-base-filter| n_g049_virtual_sample
   n_ggcp10_baseline_suite -->|g195-b067-equivalent-filter| n_g195_b067_virtual_sample
+  n_data_v3_expanded_main_dta -->|regional-threshold-grid-coordinate-base| n_regional_threshold_grid_v1
+  n_regional_threshold_maize_raster -->|regional-threshold-containing-cell-map| n_regional_threshold_grid_v1
+  n_data_v3_expanded_main_dta -->|compound-event-smoke-sample-and-window| n_compound_event_smoke_panel_v2
+  n_compound_event_tmax_aligned_series -->|compound-event-tmax-index| n_compound_event_smoke_panel_v2
+  n_compound_event_precip_aligned_series -->|compound-event-precip-index| n_compound_event_smoke_panel_v2
+  n_compound_event_smrz_aligned_series -->|compound-event-smrz-channel-index| n_compound_event_smoke_panel_v2
 ```
 
 ## 转换登记
@@ -121,3 +133,9 @@ flowchart LR
 | edge-0035 | ggcp10-baseline-suite | g057-virtual-sample | repo://scripts/python/expanded_scale_story_search.py | ggcp10_maize_frac>=0.05 and yield_domain=1 and yield_jump=1 and sm_sd=1; unchanged | three-source-confirmed |
 | edge-0036 | ggcp10-baseline-suite | g049-virtual-sample | repo://scripts/python/expanded_scale_story_search.py | ggcp10_maize_frac>=0.05 and yield_domain=1 and yield_jump=1; unchanged | three-source-confirmed |
 | edge-0037 | ggcp10-baseline-suite | g195-b067-virtual-sample | repo://scripts/python/expanded_scale_story_search.py | ggcp10_maize_frac>=0.05 and main_sample=1 and zone_core=1 and sr_within=1; unchanged | three-source-confirmed |
+| edge-0038 | data-v3-expanded-main-dta | regional-threshold-grid-v1 | repo://scripts/python/audit_regional_threshold_coverage.py | retain one coordinate record per V3 grid; not_applicable | three-source-confirmed |
+| edge-0039 | regional-threshold-maize-raster | regional-threshold-grid-v1 | repo://scripts/python/audit_regional_threshold_coverage.py | no interpolation, extrapolation or NoData filling; not_applicable | three-source-confirmed |
+| edge-0040 | data-v3-expanded-main-dta | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | first two eligible grid-year rows per named zone-year; interface only; unchanged | three-source-confirmed |
+| edge-0041 | compound-event-tmax-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | Tmax>=32C candidate days within the frozen window; not_applicable | three-source-confirmed |
+| edge-0042 | compound-event-precip-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | precipitation<1 mm/day candidate days within the frozen window; not_applicable | three-source-confirmed |
+| edge-0043 | compound-event-smrz-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | onset-14 through onset-1 antecedent and event-to-censor recovery windows; not_applicable | three-source-confirmed |

@@ -56,6 +56,8 @@ title: 2026 年版本地图
 | analysis-v3bpath | 2026-04-20 | historical | historical_module | Audited timing alignment, controls, wet-side terms, nonlinearity, proxy competition, source depth and heat consistency | Historical b-path audit | three-source-confirmed |
 | analysis-ggcp10-baseline-suite | 2026-05-18 | historical | historical_ggcp10_baseline | Ran paired mediator and yield equations for drought, heat and precipitation hot-dry using raw, dry-state and wet-state SM mediators | Input foundation for later GGCP10 scale work | three-source-confirmed |
 | ggcp10-mediation-ext | 2026-05-19 | exploratory | exploratory_ggcp10_family | Created SM mean, wet-state mirror and dry-state top-3 branches with baseline, bootstrap and heterogeneity outputs | Completed exploratory family | three-source-confirmed |
+| regional-threshold-sr-v1 | 2026-07-14 | reference | reviewed_failure_stop_data_support | Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate | Reviewed failure evidence only; not a submission candidate | git-native |
+| compound-event-intensity-duration-v1 | 2026-07-15 | reference | reviewed_failure_stop_smoke_review | Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major | Reviewed failure evidence only; not a submission candidate | git-native |
 
 ## 机制
 
@@ -92,3 +94,4 @@ title: 2026 年版本地图
 | g185-response-surface-v3 | 2026-06-21 | reviewed_sensitivity | reviewed_alternative_method | Added restricted-cubic low-degree drought-heat surfaces, spatial-block inference and explicit claim adjudication | Reviewed alternative-method sensitivity | three-source-confirmed |
 | g185-old-method-corrected | 2026-06-24 | current | current_old_method_te | Recomputed regional IE, DE and TE and corrected the earlier DE-as-TE interpretation | Current truth for old-method regional TE | three-source-confirmed |
 | g185-region-irrigation-boundary | 2026-06-24 | current_parallel | current_irrigation_boundary | Estimated region-specific continuous irrigation triple interactions and support-aware margins | Current separate boundary result | three-source-confirmed |
+| g185-old-method-unified-v1 | 2026-07-14 | reference | reviewed_failure_stop_stability | Unified the historical linear two-equation evidence and added province-by-year fixed effects, spatial-block inference and explicit stability adjudication | Reviewed failure evidence only; not a submission candidate | git-native |
