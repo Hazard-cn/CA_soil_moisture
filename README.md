@@ -8,6 +8,7 @@
 - [逐版本数据、方法与结果呈现变化](docs/VERSION_CHANGELOG.md)
 - [版本总表](docs/VERSION_MAP.md)
 - [数据谱系](docs/DATA_LINEAGE.md)
+- [当前数据资产、面板与实证入口](docs/DATA_ASSET_INVENTORY.md)
 - [对话与修改证据](docs/CONVERSATION_EVIDENCE.md)
 - [Git 前版本重建缺口](docs/PRE_GIT_RECONSTRUCTION_GAPS.md)
 - [公开结果索引](docs/results/README.md)
@@ -58,6 +59,7 @@ V1 主数据位于项目外部共享目录 `C:/YangSu/00_Project/CA_mechanism/da
 
 ## 文档索引
 
+- `docs/DATA_ASSET_INVENTORY.md`：当前可访问源数据、分析面板、G185 虚拟样本、键命名空间和合并边界
 - `docs/DATA_SOURCES_CN.md`：数据来源、样本键和基础校验
 - `docs/VARIABLES.md`：V1 变量字典
 - `docs/analysis_specification.md`：历史 V1/V4/V6 联合胁迫框架说明，不能代替当前 G185 交接

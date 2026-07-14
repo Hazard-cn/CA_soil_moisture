@@ -128,17 +128,21 @@ python scripts/python/filename.py
 
 ---
 
-## Key Data Reference
+## Current Data Assets and Merge Guardrails (verified 2026-07-14)
 
-- V1 dataset: `C:/YangSu/00_Project/CA_mechanism/data/master/data_v1_with_climate.csv` (69,038 rows, 143 cols; shared external path)
-- G185 panel inputs: `temp/2026-05-18_ggcp10_harvarea_agg_baseline_suite/ggcp10_baseline_suite_analysis_ready.dta` and `data_build/data/processed/data_v3_main.dta`
-- Outcome: `yield_tons_ha`, `ln_yield`
-- SR lever: `ca` (adoption ratio), `crc_ca_ratio`, `crc_lag1`
-- Extremes: `hdd_tmax_ge*`, `hotdays_tmax_ge*`, `SPEI_season`
-- SM channel: `gleam_smrz_mean`, `gleam_sms_mean`
-- FE keys: `grid_id` (grid FE), `year` (year FE), `prov_year` (province-year)
-- Full variable dictionary: `docs/VARIABLES.md`
-- Data provenance: `docs/DATA_SOURCES.md` / `docs/DATA_SOURCES_CN.md`
+- Required first read: `docs/DATA_ASSET_INVENTORY.md`; it records current source assets, physical panels, hashes, schema boundaries, missing snapshots and reproducible checks. Version-level lineage remains in `docs/DATA_LINEAGE.md` and `quality_reports/lineage/*.csv`.
+- Historical V1: `external://CA_mechanism/data/master/data_v1_with_climate.csv`, reachable from this workspace as `../data/master/data_v1_with_climate.csv`; 69,038 rows × 143 columns, 22,180 grids, 2016-2019, GB18030 encoding. `data/processed/analysis_main_sample.dta` is the 69,038 × 181 V1 locked panel; its `main_sample=1` support is 61,795 rows and 17,832 grids.
+- Current shared climate/state base: `data_build/data/processed/data_v3_main.parquet` for Python/R and `data_v3_main.dta` for Stata; both represent 69,038 grid-years × 1,679 logical fields. `data_v3_phenowindows` is the 122,533-row coverage view; `data_v3_noyield.parquet` contains 53,495 yield-missing rows and is not an outcome-regression sample.
+- Current G185 is a virtual sample, not a standalone panel file. Rebuild it with `scripts/python/g185_v3_data.py::load_g185_sample()` from `temp/2026-05-18_ggcp10_harvarea_agg_baseline_suite/ggcp10_baseline_suite_analysis_ready.dta` plus `data_build/data/processed/data_v3_main.dta`; `assert_g185()` must recover 46,299 rows and 13,236 grids.
+- Frozen G185 rule: `ggcp10_maize_frac >= 0.05` plus `main_sample`, `yield_domain`, `yield_jump`, and `sm_sd`; `zone_core`, `sm_coverage`, `sr_within`, `years_ge3`, and `stable_province` are off. A changed rule vector, count or input hash requires a new scale/artifact/run ID.
+- V1/V1-locked and V2/V3/GGCP10 use different numeric `grid_id` namespaces. Never merge across these families on `grid_id year`; use `round(latitude*10)`, `round(longitude*10)`, and `year`, or a verified one-to-one crosswalk. Within V2/V3/GGCP10, `grid_id year` is unique and compatible.
+- `prov_year` is a branch-specific generated group ID. Recompute it from stable province identifiers and `year`; never use the raw integer `prov_year` as a cross-branch merge key.
+- V1/V3 and GGCP10 use different maize-area denominators for `yield_tons_ha`. Current G185 uses `maize_prod / ggcp10_maize_area_km2 * 10`; do not mix its outcome, coefficients or descriptives with V1/V3 results.
+- `main_sample` is not invariant: V1 locked has 61,795 flagged rows, analysis-v2/v3 and GGCP10 base have 62,018, several derived branches have 62,034, and G185 has 46,299 after its own rules. Always use the sample definition attached to the target canonical version and report model complete cases separately.
+- Schema routing: V1 file header is authoritative for V1; `docs/VARIABLES.md` is only a partial historical dictionary. V3 Parquet/CSV uses `data_build/docs/VARIABLES_v3.md`; V3 DTA renames 592 long fields and must use `data_build/output/tables/stata_alias_map_v3.csv`; GGCP10 fields use `docs/VARIABLES_GGCP10_HARVAREA.md`.
+- Variable names are schema-specific. V1 uses families such as `hdd_tmax_ge*`, `hotdays_tmax_ge*`, and `SPEI_season`; current G185 uses `hdd_ge32`, `D_full/W_full`, and V3 `hotdrydays_ge32_pr_lt1` loaded as `HotDryPr_full`. Soil-moisture-threshold hot-dry variables are different estimands.
+- Raw-source machine locators are defined in `data_build/scripts/python/config.py`; upstream archives and notebook provenance are indexed in `data_build/docs/DATA_AUDIT_20260328.md`. The aligned SWSM files have verified missing/duplicate dates while the current script indexes by array position, so new date-sensitive SWSM work requires a dedicated audit or rebuild.
+- Before estimation, record canonical data ID, physical path, SHA-256, row/column counts, key namespace, sample predicate and outcome definition; assert key uniqueness after loading. Data, intermediate panels, caches, logs, models and binary outputs remain outside Git.
 
 ---
 
