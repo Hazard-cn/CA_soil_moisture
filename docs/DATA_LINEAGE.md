@@ -16,6 +16,9 @@ flowchart LR
   n_analysis_v3prhdsm_ready_dta["analysis-v3prhdsm-ready-dta\npresent"]
   n_analysis_v3proxy_ready_dta["analysis-v3proxy-ready-dta\npresent"]
   n_analysis_v3sub_ready_dta["analysis-v3sub-ready-dta\npresent"]
+  n_compound_event_override_full_event_panel_v1["compound-event-override-full-event-panel-v1\npresent"]
+  n_compound_event_override_model_manifest_v3["compound-event-override-model-manifest-v3\npresent"]
+  n_compound_event_override_recovery_manifest_v2["compound-event-override-recovery-manifest-v2\npresent"]
   n_compound_event_precip_aligned_series["compound-event-precip-aligned-series\npresent"]
   n_compound_event_smoke_panel_v2["compound-event-smoke-panel-v2\npresent"]
   n_compound_event_smrz_aligned_series["compound-event-smrz-aligned-series\npresent"]
@@ -47,6 +50,8 @@ flowchart LR
   n_mechanism_v5drymed_ready_dta["mechanism-v5drymed-ready-dta\npresent"]
   n_regional_threshold_grid_v1["regional-threshold-grid-v1\npresent"]
   n_regional_threshold_maize_raster["regional-threshold-maize-raster\npresent"]
+  n_regional_threshold_override_exposure_panel_v2["regional-threshold-override-exposure-panel-v2\npresent"]
+  n_regional_threshold_override_phenology_netcdf["regional-threshold-override-phenology-netcdf\npresent"]
   n_data_v1_master -->|v1-add-county-city| n_data_v1_county_city
   n_data_v1_county_city -->|v1-phase0-lock| n_data_v1_locked_panel
   n_data_v1_master -->|v2-initial-climate-pipeline| n_data_v2_main_initial_missing
@@ -90,6 +95,17 @@ flowchart LR
   n_compound_event_tmax_aligned_series -->|compound-event-tmax-index| n_compound_event_smoke_panel_v2
   n_compound_event_precip_aligned_series -->|compound-event-precip-index| n_compound_event_smoke_panel_v2
   n_compound_event_smrz_aligned_series -->|compound-event-smrz-channel-index| n_compound_event_smoke_panel_v2
+  n_data_v3_expanded_main -->|regional-threshold-override-panel-base| n_regional_threshold_override_exposure_panel_v2
+  n_regional_threshold_maize_raster -->|regional-threshold-override-containing-cell-map| n_regional_threshold_override_exposure_panel_v2
+  n_compound_event_tmax_aligned_series -->|regional-threshold-override-daily-edd| n_regional_threshold_override_exposure_panel_v2
+  n_compound_event_smrz_aligned_series -->|regional-threshold-override-smrz-windows| n_regional_threshold_override_exposure_panel_v2
+  n_regional_threshold_override_phenology_netcdf -->|regional-threshold-override-phenology-windows| n_regional_threshold_override_exposure_panel_v2
+  n_data_v3_expanded_main_dta -->|compound-event-override-gridyear-base| n_compound_event_override_full_event_panel_v1
+  n_compound_event_tmax_aligned_series -->|compound-event-override-tmax-events| n_compound_event_override_full_event_panel_v1
+  n_compound_event_precip_aligned_series -->|compound-event-override-precip-events| n_compound_event_override_full_event_panel_v1
+  n_compound_event_smrz_aligned_series -->|compound-event-override-smrz-timing| n_compound_event_override_full_event_panel_v1
+  n_compound_event_override_full_event_panel_v1 -->|compound-event-override-yield-models| n_compound_event_override_model_manifest_v3
+  n_compound_event_override_full_event_panel_v1 -->|compound-event-override-recovery-estimation| n_compound_event_override_recovery_manifest_v2
 ```
 
 ## 转换登记
@@ -139,3 +155,14 @@ flowchart LR
 | edge-0041 | compound-event-tmax-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | Tmax>=32C candidate days within the frozen window; not_applicable | three-source-confirmed |
 | edge-0042 | compound-event-precip-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | precipitation<1 mm/day candidate days within the frozen window; not_applicable | three-source-confirmed |
 | edge-0043 | compound-event-smrz-aligned-series | compound-event-smoke-panel-v2 | repo://scripts/python/run_hotdry_event_stage1.py | onset-14 through onset-1 antecedent and event-to-censor recovery windows; not_applicable | three-source-confirmed |
+| edge-0044 | data-v3-expanded-main | regional-threshold-override-exposure-panel-v2 | repo://scripts/python/run_regional_threshold_daily_override.py | five named zones with complete outcome, CA, controls and dates; then expand to full-season, V3-HE and HE-MA; unchanged | three-source-confirmed |
+| edge-0045 | regional-threshold-maize-raster | regional-threshold-override-exposure-panel-v2 | repo://scripts/python/run_regional_threshold_daily_override.py | retain the unrounded continuous threshold; no interpolation, extrapolation or fixed-threshold fill; not_applicable | three-source-confirmed |
+| edge-0046 | compound-event-tmax-aligned-series | regional-threshold-override-exposure-panel-v2 | repo://scripts/python/run_regional_threshold_daily_override.py | sum daily Tmax exceedance above each grid's external threshold within each frozen window; not_applicable | three-source-confirmed |
+| edge-0047 | compound-event-smrz-aligned-series | regional-threshold-override-exposure-panel-v2 | repo://scripts/python/run_regional_threshold_daily_override.py | antecedent day -14 to -1 and within-window mean, minimum and change from antecedent; not_applicable | three-source-confirmed |
+| edge-0048 | regional-threshold-override-phenology-netcdf | regional-threshold-override-exposure-panel-v2 | repo://scripts/python/run_regional_threshold_daily_override.py | freeze full growing season, V3-HE and HE-MA boundaries; no best-window search; not_applicable | three-source-confirmed |
+| edge-0049 | data-v3-expanded-main-dta | compound-event-override-full-event-panel-v1 | repo://scripts/python/run_hotdry_event_override_stage1.py | five named zones and frozen v3_doy-30 through ma_doy window; preserve no-event grid-years and event indicator; unchanged | three-source-confirmed |
+| edge-0050 | compound-event-tmax-aligned-series | compound-event-override-full-event-panel-v1 | repo://scripts/python/run_hotdry_event_override_stage1.py | Tmax>=32C and at least three consecutive joint qualifying days within the frozen window; not_applicable | three-source-confirmed |
+| edge-0051 | compound-event-precip-aligned-series | compound-event-override-full-event-panel-v1 | repo://scripts/python/run_hotdry_event_override_stage1.py | precipitation<1 mm/day jointly with Tmax>=32C for at least three consecutive days; not_applicable | three-source-confirmed |
+| edge-0052 | compound-event-smrz-aligned-series | compound-event-override-full-event-panel-v1 | repo://scripts/python/run_hotdry_event_override_stage1.py | onset-14 through onset-1 antecedent, onset through end+3 drawdown and up to 30-day recovery or censoring; not_applicable | three-source-confirmed |
+| edge-0053 | compound-event-override-full-event-panel-v1 | compound-event-override-model-manifest-v3 | repo://scripts/python/run_hotdry_event_round1_revision.py | 61,918 complete-case grid-years; joint duration-intensity model is main and separate models are retained; unchanged | three-source-confirmed |
+| edge-0054 | compound-event-override-full-event-panel-v1 | compound-event-override-recovery-manifest-v2 | repo://scripts/python/run_hotdry_event_override_recovery_v2.py | complete antecedent window and recovery follow-up until threshold, next event, season end, data end or day 30; not_applicable | three-source-confirmed |
