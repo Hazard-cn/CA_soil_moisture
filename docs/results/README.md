@@ -15,6 +15,15 @@
 - [`g185-response-surface-v3`](g185-response-surface-v3/report.md)：低自由度 drought-heat response surface 的审阅与敏感性判定。
 - [`g185-region-irrigation-boundary`](g185-region-irrigation-boundary/report.md)：old-method 区域连续灌溉三重交互边界。
 
+## 当前候选稿
+
+- [`g185-old-method-unified-override-v1`](g185-old-method-unified-override-v1/report.html)：G185旧线性两方程全国、连续区域与五区证据统一稿；同目录保留[Markdown正文](g185-old-method-unified-override-v1/report.md)。独立审查92/100，IE/DE/TE仍仅解释为代数组件，尚非95分投稿完成稿。
+- [`compound-event-intensity-duration-override-v1`](compound-event-intensity-duration-override-v1/report.md)：热干事件持续时间—强度联合模型、五区异质性及SM时序证据；[自包含三图](compound-event-intensity-duration-override-v1/figures.html)。独立审查91/100，尚非95分投稿完成稿。
+
+## Override 完整执行后审核失败
+
+- [`regional-threshold-sr-override-v1`](regional-threshold-sr-override-v1/report.md)：在不插值或回填阈值的前提下继续运行完整外生阈值EDD模型；最终方法审查72/100、0 Critical、3 Major、4 Minor，公共失败报告最终核验PASS不改变`REVIEWED_NOT_CANDIDATE`状态。
+
 ## 审核通过的STOP报告
 
 - [`regional-threshold-sr-v1`](regional-threshold-sr-v1/report.md)：官方连续玉米热害阈值在西南产区覆盖不足80%，方向停止于Stage 1数据支持门槛；未运行EDD或产量模型。

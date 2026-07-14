@@ -1394,6 +1394,22 @@ drought-only Model 8；mediator和yield两方程；baseline-local、pooled-state
 - 规则代码：`repo://scripts/python/run_hotdry_event_stage1.py`；代码 SHA-256=`e8adb78193a1358901048155e45a336e6cecdbe7ba33df0db68a2d3786b00b93`。
 - 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
 
+#### `sample-regional-threshold-override-model-v2` — Regional-threshold override final yield-model sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"column":"external_threshold_valid","operator":"==","value":1},{"columns":["ln_yield","ca","gdd_10_29","pr_sum","province","year","daily_tmax_window"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|external_threshold_valid=1|daily_tmax_window_valid=1|yield_ca_controls_fe_complete=1`。
+- 样本规模：rows=54890；grids=17450；区域计数=`{"HHH":{"rows":12922,"grids":3775},"NE":{"rows":23719,"grids":6966},"NW":{"rows":4681,"grids":1849},"SH":{"rows":4501,"grids":1668},"SW":{"rows":9067,"grids":3192}}`。
+- 规则代码：`repo://scripts/python/run_regional_threshold_daily_override.py`；代码 SHA-256=`10b44b0242dc6397d1bcff37ef5a55396d250f0dc845fcab26c9e656db0e01fb`。
+- 状态：`reference`；verified_at=`2026-07-15`；supersedes=`none`。
+
+#### `sample-compound-event-override-model-v1` — Compound-event override complete-case yield-model sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"columns":["ln_yield","ca","total_duration","mean_intensity","gdd_10_29","pr_sum","province","year"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|event_metrics_zero_when_no_event=1|yield_ca_controls_fe_complete=1`。
+- 样本规模：rows=61918；grids=19749；区域计数=`{"HHH":{"rows":13165,"grids":3844},"NE":{"rows":24876,"grids":7314},"NW":{"rows":5534,"grids":2226},"SH":{"rows":4556,"grids":1692},"SW":{"rows":13787,"grids":4673}}`。
+- 规则代码：`repo://scripts/python/run_hotdry_event_override_models.py`；代码 SHA-256=`fdb05bb78aeab0ccff17e6534ae0166b3129171646bbf92aedae3a98f05eaeae`。
+- 状态：`current`；verified_at=`2026-07-15`；supersedes=`none`。
+
 直接子版本或组件：
 
 | 子节点 | 日期 | 状态 | 相对变化摘要 |
@@ -2459,6 +2475,12 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 - 规则代码：`repo://scripts/python/expanded_scale_story_search.py`；代码 SHA-256=`cabb1a038b1efb3b6ce88fd4f81c9eb3e086372554f2d43d3ea886f9626bb712`。
 - 状态：`current`；verified_at=`2026-07-14`；supersedes=`none`。
 
+直接子版本或组件：
+
+| 子节点 | 日期 | 状态 | 相对变化摘要 |
+|---|---|---|---|
+| `g185-old-method-unified-override-v1` | 2026-07-15 | `current_parallel` | Continued the previously stopped G185 branch under the user-authorized nonblocking stability gate and assembled the historical national, continuous regional and five-zone algebraic evidence into one reviewed candidate |
+
 ### 方法变化
 
 复现IE=(a1+a3s)b、DE=c1+c3s、TE=IE+DE，并新增grid FE+province-year FE、2度Rademacher/Webb 1,999次、Romano-Wolf、Holm及100/200/300 km HAC
@@ -2521,6 +2543,12 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 - 规则代码：`repo://scripts/python/audit_regional_threshold_coverage.py`；代码 SHA-256=`f8c84ce75aa0e29a1f59bdebb7f74cec5914de05ada6d39f4521d8462448a481`。
 - 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
 
+直接子版本或组件：
+
+| 子节点 | 日期 | 状态 | 相对变化摘要 |
+|---|---|---|---|
+| `regional-threshold-sr-override-v1` | 2026-07-15 | `reference` | Continued past the historical coverage gate without imputing thresholds, executed the frozen external-threshold daily exposure model and retained the independent Round 2 failure decision |
+
 ### 方法变化
 
 仅执行原始PixelIsArea单元中心映射和确定性覆盖审计；未执行EDD、固定效应、bootstrap、物候窗口或产量模型
@@ -2548,6 +2576,69 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 
 - 综合变化：Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate
 - 证据限制：PASS_PUBLIC_STOP_REPORT 97/100; STOP_DATA_SUPPORT_GATE; no SR buffering coefficient exists
+
+## `compound-event-intensity-duration-override-v1` — Compound-event intensity-duration SR override v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-15；`current_parallel`；`analysis_release` |
+| 父版/取代关系 | parent=`compound-event-intensity-duration-v1`；supersedes=`none` |
+| 当前用途 | Reviewed candidate manuscript; not 95 publication-ready；truth role=`current_reviewed_event_duration_intensity_candidate` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+使用V3五区61,918个grid-years、19,749个grids以及147,648行完整事件panel；同时保留扩展窗口、严格V3-MA窗口、重叠事件支持和恢复样本
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `compound-event-override-full-event-panel-v1` | event-panel | present | 147648×37 | `local://temp/2026-07-15_compound_event_override_stage1_v1/event_panel.csv.gz` |
+| `compound-event-override-model-manifest-v3` | result-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_override_round1_revision_v3/run_manifest.json` |
+| `compound-event-override-recovery-manifest-v2` | result-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_override_recovery_v2/run_manifest.json` |
+| `compound-event-override-report-manifest-v3` | result-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_override_report_v3/report_run_manifest.json` |
+| `compound-event-override-public-markdown` | public-result | present | 未记录 | `repo://docs/results/compound-event-intensity-duration-override-v1/report.md` |
+| `compound-event-override-public-figures-html` | public-result | present | 未记录 | `repo://docs/results/compound-event-intensity-duration-override-v1/figures.html` |
+| `compound-event-override-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_hotdry_event_override_method_review_round2.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-compound-event-override-model-v1` — Compound-event override complete-case yield-model sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"columns":["ln_yield","ca","total_duration","mean_intensity","gdd_10_29","pr_sum","province","year"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|event_metrics_zero_when_no_event=1|yield_ca_controls_fe_complete=1`。
+- 样本规模：rows=61918；grids=19749；区域计数=`{"HHH":{"rows":13165,"grids":3844},"NE":{"rows":24876,"grids":7314},"NW":{"rows":5534,"grids":2226},"SH":{"rows":4556,"grids":1692},"SW":{"rows":13787,"grids":4673}}`。
+- 规则代码：`repo://scripts/python/run_hotdry_event_override_models.py`；代码 SHA-256=`fdb05bb78aeab0ccff17e6534ae0166b3129171646bbf92aedae3a98f05eaeae`。
+- 状态：`current`；verified_at=`2026-07-15`；supersedes=`none`。
+
+### 方法变化
+
+联合估计duration与mean intensity并保留分别模型；grid与province-year FE；2度同步Rademacher/Webb 1,999次、Romano-Wolf/Holm、100/200/300 km HAC、R/Stata复算，以及antecedent/drawdown和固定IPCW/RMST
+
+#### `method-compound-event-override-v1`
+
+- Outcome / estimand：ln_yield at grid-year level; separate event-level GLEAM SMrz drawdown and recovery outcomes；Joint duration and mean-intensity conditional yield-change contrast from zone P50 to P90 exposure at common-sample CA P25 versus P75; separate models and strict V3-MA window retained as checks。
+- Exposure / mediator：Events require Tmax>=32C and precipitation<1 mm/day for at least three consecutive days; total duration and mean exceedance intensity enter the joint main model；Antecedent SMrz, drawdown with overlapping-event sensitivity and 30-day fixed-IPCW or RMST recovery; descriptive channel evidence only。
+- Controls / FE：GDD10-29, seasonal precipitation and precipitation squared with zone, CA, exposure and required lower-order interactions；Grid FE and province-by-year FE。
+- Inference：Synchronous 2-degree Rademacher and Webb inference with joint covariance; Romano-Wolf, Holm, 100/200/300 km HAC, strict-window checks and R or Stata replication；bootstrap=2-degree spatial-block Rademacher and Webb wild bootstrap；reps=1999；seed=42。
+- 代码入口：`repo://scripts/python/run_hotdry_event_round1_revision.py`。
+- 解释边界：Only the HHH duration conditional-change difference may be highlighted and its low-SR negative to high-SR positive transition must be disclosed; no nationwide buffering, causal effect, causal mediation, independently robust intensity result or confirmed SM recovery channel may be claimed。
+
+### 结果呈现变化
+
+发布中文候选小稿、自包含三图HTML和全部非显著与边界结果；独立Round 2为PASS_CANDIDATE 91/100、0 Critical/Major；不称为95分投稿完成稿
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-compound-event-override-round1-revision-v3-20260715` | `data-v3-expanded-main-dta\|compound-event-tmax-aligned-series\|compound-event-precip-aligned-series\|compound-event-smrz-aligned-series\|compound-event-override-full-event-panel-v1` | `sample-compound-event-override-model-v1` | `method-compound-event-override-v1` | `repo://scripts/python/run_hotdry_event_round1_revision.py` | `local://temp/2026-07-15_compound_event_override_report_v3/report_run_manifest.json` | `repo://docs/results/compound-event-intensity-duration-override-v1/report.md` | verified_current |
+
+### 相对前版与证据边界
+
+- 综合变化：Continued the stopped smoke branch to full five-zone event, yield and soil-moisture analyses and made the triggered joint duration-intensity model the reviewed main specification
+- 证据限制：可公开主张限于黄淮海持续时间条件变化差异并须同时披露低SR负变化转为高SR正变化；不得声称全国一致缓冲、因果效应、因果中介、独立稳健强度结果或SM恢复通道确认
 
 ## `compound-event-intensity-duration-v1` — Compound-event intensity-duration SR direction v1
 
@@ -2587,6 +2678,12 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 - 规则代码：`repo://scripts/python/run_hotdry_event_stage1.py`；代码 SHA-256=`e8adb78193a1358901048155e45a336e6cecdbe7ba33df0db68a2d3786b00b93`。
 - 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
 
+直接子版本或组件：
+
+| 子节点 | 日期 | 状态 | 相对变化摘要 |
+|---|---|---|---|
+| `compound-event-intensity-duration-override-v1` | 2026-07-15 | `current_parallel` | Continued the stopped smoke branch to full five-zone event, yield and soil-moisture analyses and made the triggered joint duration-intensity model the reviewed main specification |
+
 ### 方法变化
 
 事件定义固定为窗口内Tmax>=32C且降水<1 mm连续至少3天；仅测试事件、antecedent SM、drawdown和recovery接口；未估计FE、IPCW/RMST或产量模型
@@ -2614,3 +2711,127 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 - 综合变化：Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major
 - 证据限制：Design review passed 92/100, but smoke review stopped at 89/100 after the frozen two-round limit; no support counts or empirical coefficients may be claimed
+
+## `g185-old-method-unified-override-v1` — G185 old-method unified override v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-15；`current_parallel`；`analysis_release` |
+| 父版/取代关系 | parent=`g185-old-method-unified-v1`；supersedes=`none` |
+| 当前用途 | Reviewed 92/100 candidate manuscript; not 95 publication-ready；truth role=`current_reviewed_g185_unified_candidate` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+沿用冻结G185规则的46,299行、13,236 grids及五命名区44,556行、12,745 grids；未改变G185规则、输入哈希或结果变量口径
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `g185-old-method-unified-override-manifest-v1` | result-manifest | present | 未记录 | `local://temp/2026-07-15_g185_old_method_unified_override_v1/override_manifest.json` |
+| `g185-old-method-unified-override-public-markdown` | public-result | present | 未记录 | `repo://docs/results/g185-old-method-unified-override-v1/report.md` |
+| `g185-old-method-unified-override-public-html` | public-result | present | 未记录 | `repo://docs/results/g185-old-method-unified-override-v1/report.html` |
+| `g185-old-method-unified-override-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_g185_override_method_review_round2.md` |
+| `g185-old-method-unified-override-html-final-review` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_g185_override_selfcontained_html_final_review.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-g185` — G185 frozen scale
+
+- 谓词：`{"all":[{"column":"ggcp10_maize_frac","operator":">=","value":0.05},{"rule":"main_sample","active":1},{"rule":"zone_core","active":0},{"rule":"yield_domain","active":1},{"rule":"yield_jump","active":1},{"rule":"sm_sd","active":1},{"rule":"sm_coverage","active":0},{"rule":"sr_within","active":0},{"rule":"years_ge3","active":0},{"rule":"stable_province","active":0}]}`。
+- 规则向量：`crop_mask=ggcp10>=0.05|main_sample=1|zone_core=0|yield_domain=1|yield_jump=1|sm_sd=1|sm_coverage=0|sr_within=0|years_ge3=0|stable_province=0`。
+- 样本规模：rows=46299；grids=13236；区域计数=`{"HHH":{"rows":12213},"NE":{"rows":20794},"NW":{"rows":3414},"Other":{"rows":1743},"SH":{"rows":903},"SW":{"rows":7232}}`。
+- 规则代码：`repo://scripts/python/expanded_scale_story_search.py`；代码 SHA-256=`cabb1a038b1efb3b6ce88fd4f81c9eb3e086372554f2d43d3ea886f9626bb712`。
+- 状态：`current`；verified_at=`2026-07-14`；supersedes=`none`。
+
+### 方法变化
+
+复现IE=(a1+a3s)b、DE=c1+c3s、TE=IE+DE；报告grid/year与grid/province-year FE、2度空间块Rademacher/Webb 1,999次、Romano-Wolf/Holm及100/200/300 km HAC
+
+#### `method-g185-old-method-unified-override`
+
+- Outcome / estimand：ln_yield_raw paired with gleam_smrz_mean_raw equation；Historical IE=(a1+a3s)b, DE=c1+c3s and TE=IE+DE evaluated at fixed or regional stress endpoints and SR P25, P50 or P75。
+- Exposure / mediator：D_full_raw; hdd_ge32_raw; HotDryPr_full_raw; ca_raw and stress-by-ca interactions；Contemporaneous gleam_smrz_mean_raw algebraic component only。
+- Controls / FE：Companion hazards; precipitation; ET0; GDD; irrigation and aridity；Grid and year FE for historical estimator; grid and province-by-year FE for added robustness。
+- Inference：Synchronous 2-degree spatial-block covariance for 15 zone-stress contrasts; Romano-Wolf stepdown, Holm and 100/200/300 km spatial HAC checks；bootstrap=2-degree Rademacher and Webb wild bootstrap；reps=1999；seed=42。
+- 代码入口：`repo://scripts/python/export_g185_old_method_override.py`。
+- 解释边界：IE, DE and TE are algebraic two-equation components rather than identified causal mediation; 84.1921% NE drought direction stability and all adverse or nonsignificant results remain disclosed; do not claim uniquely optimal G185 or robust buffering。
+
+### 结果呈现变化
+
+发布中文候选小稿Markdown和内嵌三图的自包含HTML；独立方法Round 2为90/100且无Critical/Major，后续自包含HTML终审为92/100；不把候选稿写成95分投稿完成稿
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-g185-old-method-unified-override-20260715` | `g185-old-method-unified-full-manifest-v2\|g185-virtual-sample\|ggcp10-baseline-suite\|data-v3-expanded-main-dta` | `sample-g185` | `method-g185-old-method-unified-override` | `repo://scripts/python/export_g185_old_method_override.py` | `local://temp/2026-07-15_g185_old_method_unified_override_v1/override_manifest.json` | `repo://docs/results/g185-old-method-unified-override-v1/report.html` | verified_current |
+
+### 相对前版与证据边界
+
+- 综合变化：Continued the previously stopped G185 branch under the user-authorized nonblocking stability gate and assembled the historical national, continuous regional and five-zone algebraic evidence into one reviewed candidate
+- 证据限制：东北干旱空间扰动同向比例84.1921%仍完整报告，旧FULL_STOP未被覆盖或解除；IE、DE和TE仅为两方程代数组件，不是因果中介
+
+## `regional-threshold-sr-override-v1` — Regional heterogeneous temperature threshold SR override v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-15；`reference`；`reviewed_failure_record` |
+| 父版/取代关系 | parent=`regional-threshold-sr-v1`；supersedes=`none` |
+| 当前用途 | Reviewed failure evidence only; not a submission candidate；truth role=`reviewed_failure_not_candidate_external_threshold` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+使用V3主面板、官方连续maize.tif、2016-2019对齐Tmax与SMrz及实际物候NetCDF；阈值有效58,464行，最终模型54,890行、17,450 grids；未插值、外推或回填固定阈值
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `regional-threshold-override-phenology-netcdf` | raw-input | present | 未记录 | `external://maize-phenology-ca-0.1deg-v2/maizephenology-ca-ratio-2016-2019-0p1deg.nc` |
+| `regional-threshold-override-exposure-panel-v2` | exposure-panel | present | 175392×22 | `local://temp/2026-07-15_regional_threshold_daily_override_full_v2/daily_exposure_panel.parquet` |
+| `regional-threshold-override-run-manifest-v2` | result-manifest | present | 未记录 | `local://temp/2026-07-15_regional_threshold_daily_override_full_v2/run_manifest.json` |
+| `regional-threshold-override-post-validation-v2` | audit-manifest | present | 未记录 | `local://temp/2026-07-15_regional_threshold_daily_override_full_v2/round1_post_validation_manifest.json` |
+| `regional-threshold-override-public-failure-report` | public-result | present | 未记录 | `repo://docs/results/regional-threshold-sr-override-v1/report.md` |
+| `regional-threshold-override-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_regional_threshold_override_method_review_round2.md` |
+| `regional-threshold-override-public-final-review` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_regional_threshold_override_failure_public_final_review.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-regional-threshold-override-model-v2` — Regional-threshold override final yield-model sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"column":"external_threshold_valid","operator":"==","value":1},{"columns":["ln_yield","ca","gdd_10_29","pr_sum","province","year","daily_tmax_window"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|external_threshold_valid=1|daily_tmax_window_valid=1|yield_ca_controls_fe_complete=1`。
+- 样本规模：rows=54890；grids=17450；区域计数=`{"HHH":{"rows":12922,"grids":3775},"NE":{"rows":23719,"grids":6966},"NW":{"rows":4681,"grids":1849},"SH":{"rows":4501,"grids":1668},"SW":{"rows":9067,"grids":3192}}`。
+- 规则代码：`repo://scripts/python/run_regional_threshold_daily_override.py`；代码 SHA-256=`10b44b0242dc6397d1bcff37ef5a55396d250f0dc845fcab26c9e656db0e01fb`。
+- 状态：`reference`；verified_at=`2026-07-15`；supersedes=`none`。
+
+### 方法变化
+
+构造外生连续阈值EDD并估计五区完全交互、共同CA P25/P75、全季及V3-HE和HE-MA窗口；grid与province-year FE；2度空间块wild bootstrap 1,999次及空间HAC复核
+
+#### `method-regional-threshold-override-v2`
+
+- Outcome / estimand：ln_yield; separate GLEAM SMrz state and channel outcomes；Five-zone conditional yield-change difference when external-threshold EDD moves from zone P50 to P90 and CA moves from common-sample P25 to P75。
+- Exposure / mediator：Continuous external-threshold EDD for full growing season, V3-HE and HE-MA with zone, CA and all required lower-order interactions；GLEAM SMrz antecedent day -14 to -1, within-window mean or minimum and change from antecedent; not entered as a causal mediator in the main yield equation。
+- Controls / FE：Fixed GDD10-29, seasonal precipitation and precipitation squared plus frozen lower-order terms；Grid FE and province-by-year FE。
+- Inference：Synchronous 2-degree spatial-block wild inference across zones and windows; Romano-Wolf stepdown, Holm, grid-cluster comparison and spatial HAC；bootstrap=2-degree Rademacher wild bootstrap；reps=1999；seed=42。
+- 代码入口：`repo://scripts/python/run_regional_threshold_daily_override.py`。
+- 解释边界：Final reviewed result does not support a buffering manuscript; SM lacks primary spatial joint inference and phenology joint Wald or boundary sensitivity remains incomplete; no interpolation, best-threshold search, best-window search or Round 3 is authorized。
+
+### 结果呈现变化
+
+发布完整失败报告及全部五区、SM和物候边界；Round 2为72/100、0 Critical、3 Major、4 Minor；公共失败报告最终核验PASS只确认披露准确
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-regional-threshold-override-full-v2-20260715` | `data-v3-expanded-main\|regional-threshold-maize-raster\|regional-threshold-override-phenology-netcdf\|compound-event-tmax-aligned-series\|compound-event-smrz-aligned-series` | `sample-regional-threshold-override-model-v2` | `method-regional-threshold-override-v2` | `repo://scripts/python/run_regional_threshold_daily_override.py` | `local://temp/2026-07-15_regional_threshold_daily_override_full_v2/run_manifest.json\|local://temp/2026-07-15_regional_threshold_daily_override_full_v2/round1_post_validation_manifest.json` | `repo://docs/results/regional-threshold-sr-override-v1/report.md` | verified_sensitivity |
+
+### 相对前版与证据边界
+
+- 综合变化：Continued past the historical coverage gate without imputing thresholds, executed the frozen external-threshold daily exposure model and retained the independent Round 2 failure decision
+- 证据限制：FAIL/REVIEWED_NOT_CANDIDATE；公共报告PASS不改变失败状态，不授权Round 3或更有利的阈值、窗口、样本与函数形式搜索

@@ -16,6 +16,15 @@ title: 公开结果索引
 - [G185 响应面 v3 审阅摘要](g185-response-surface-v3/report.md)
 - [G185 区域连续灌溉边界](g185-region-irrigation-boundary/report.md)
 
+## 当前候选稿
+
+- [G185 旧方法统一 override 候选稿（自包含 HTML）](g185-old-method-unified-override-v1/report.html)；[Markdown 正文](g185-old-method-unified-override-v1/report.md)。独立审查92/100，尚非95分投稿完成稿。
+- [热干事件强度—持续时间 override 候选稿](compound-event-intensity-duration-override-v1/report.md)；[自包含三图](compound-event-intensity-duration-override-v1/figures.html)。独立审查91/100，尚非95分投稿完成稿。
+
+## Override 完整执行后审核失败
+
+- [地区异质温度阈值 override 完整失败报告](regional-threshold-sr-override-v1/report.md)：最终方法审查72/100且仍有3项Major；公共失败报告PASS只确认披露准确，不改变非候选状态。
+
 ## 审核通过的STOP报告
 
 - [地区异质温度阈值方向Stage 1 STOP](regional-threshold-sr-v1/report.md)

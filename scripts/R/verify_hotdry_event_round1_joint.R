@@ -1,0 +1,12 @@
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) != 2) stop("usage: input.csv.gz output.csv")
+suppressPackageStartupMessages(library(fixest))
+d <- read.csv(gzfile(args[1]), check.names = FALSE)
+x <- sprintf("x%02d", 1:28)
+f <- as.formula(paste("ln_yield ~", paste(x, collapse = "+"), "| grid_id + prov_year"))
+m <- feols(f, data = d, cluster = ~grid_id, notes = FALSE)
+c <- as.data.frame(coeftable(m))
+c$term <- rownames(c)
+rownames(c) <- NULL
+names(c)[1:4] <- c("coefficient", "cluster_se", "t", "p")
+write.csv(c[, c("term", "coefficient", "cluster_se", "t", "p")], args[2], row.names = FALSE, fileEncoding = "UTF-8")
