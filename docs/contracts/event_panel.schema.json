@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.regression-sr/contracts/event_panel.schema.json",
+  "title": "SR portfolio event_panel record",
+  "description": "Key is grid_id, year, event_seq. No-event grid-years have one placeholder row with event_seq=0. Yield regressions must use only is_grid_year_representative=true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "grid_id",
+    "year",
+    "zone",
+    "latitude",
+    "longitude",
+    "event_seq",
+    "event_id",
+    "event_indicator",
+    "is_grid_year_representative",
+    "window_start_doy",
+    "window_end_doy",
+    "window_total_days",
+    "temp_valid_days",
+    "pre_valid_days",
+    "daily_complete_flag",
+    "event_count",
+    "total_duration_days",
+    "longest_duration_days",
+    "mean_event_intensity_c",
+    "cumulative_excess_cday",
+    "compound_share_of_heat_days",
+    "onset_doy",
+    "end_doy",
+    "duration_days",
+    "event_mean_excess_c",
+    "event_cumulative_excess_cday",
+    "antecedent_smrz",
+    "antecedent_valid_days",
+    "sm_channel_complete_flag",
+    "event_min_smrz",
+    "drawdown_smrz",
+    "drawdown_overlap_next_event",
+    "recovery_days",
+    "recovery_observed",
+    "right_censored",
+    "censor_reason"
+  ],
+  "properties": {
+    "contract_version": {"const": "event-panel-v1"},
+    "grid_id": {"type": "string", "minLength": 1},
+    "year": {"type": "integer", "minimum": 1900, "maximum": 2200},
+    "zone": {"type": "string", "enum": ["NE", "HHH", "NW", "SW", "SH", "Other"]},
+    "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+    "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+    "event_seq": {"type": "integer", "minimum": 0},
+    "event_id": {"type": ["string", "null"], "pattern": "^.+\\|[0-9]{4}\\|[1-9][0-9]*$"},
+    "event_indicator": {"type": "boolean"},
+    "is_grid_year_representative": {"type": "boolean"},
+    "window_start_doy": {"type": "integer", "minimum": 1, "maximum": 366},
+    "window_end_doy": {"type": "integer", "minimum": 1, "maximum": 366},
+    "window_total_days": {"type": "integer", "minimum": 1, "maximum": 366},
+    "temp_valid_days": {"type": "integer", "minimum": 0, "maximum": 366},
+    "pre_valid_days": {"type": "integer", "minimum": 0, "maximum": 366},
+    "daily_complete_flag": {"type": "boolean"},
+    "event_count": {"type": "integer", "minimum": 0},
+    "total_duration_days": {"type": "integer", "minimum": 0},
+    "longest_duration_days": {"type": "integer", "minimum": 0},
+    "mean_event_intensity_c": {"type": ["number", "null"], "minimum": 0},
+    "cumulative_excess_cday": {"type": "number", "minimum": 0},
+    "compound_share_of_heat_days": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "onset_doy": {"type": ["integer", "null"], "minimum": 1, "maximum": 366},
+    "end_doy": {"type": ["integer", "null"], "minimum": 1, "maximum": 366},
+    "duration_days": {"type": ["integer", "null"], "minimum": 3},
+    "event_mean_excess_c": {"type": ["number", "null"], "minimum": 0},
+    "event_cumulative_excess_cday": {"type": ["number", "null"], "minimum": 0},
+    "antecedent_smrz": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "antecedent_valid_days": {"type": ["integer", "null"], "minimum": 0, "maximum": 14},
+    "sm_channel_complete_flag": {"type": ["boolean", "null"]},
+    "event_min_smrz": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "drawdown_smrz": {"type": ["number", "null"]},
+    "drawdown_overlap_next_event": {"type": ["boolean", "null"]},
+    "recovery_days": {"type": ["integer", "null"], "minimum": 0, "maximum": 30},
+    "recovery_observed": {"type": ["boolean", "null"]},
+    "right_censored": {"type": ["boolean", "null"]},
+    "censor_reason": {
+      "type": ["string", "null"],
+      "enum": ["recovered", "next-event", "ma-end", "data-end", "thirty-day-limit", "insufficient-sm", null]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event_indicator": {"const": false}}},
+      "then": {
+        "properties": {
+          "event_seq": {"const": 0},
+          "event_id": {"type": "null"},
+          "is_grid_year_representative": {"const": true},
+          "event_count": {"const": 0},
+          "total_duration_days": {"const": 0},
+          "longest_duration_days": {"const": 0},
+          "mean_event_intensity_c": {"const": 0},
+          "cumulative_excess_cday": {"const": 0},
+          "onset_doy": {"type": "null"},
+          "end_doy": {"type": "null"},
+          "duration_days": {"type": "null"},
+          "event_mean_excess_c": {"type": "null"},
+          "event_cumulative_excess_cday": {"type": "null"},
+          "antecedent_smrz": {"type": "null"},
+          "antecedent_valid_days": {"type": "null"},
+          "sm_channel_complete_flag": {"type": "null"},
+          "event_min_smrz": {"type": "null"},
+          "drawdown_smrz": {"type": "null"},
+          "drawdown_overlap_next_event": {"type": "null"},
+          "recovery_days": {"type": "null"},
+          "recovery_observed": {"type": "null"},
+          "right_censored": {"type": "null"},
+          "censor_reason": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"event_indicator": {"const": true}}},
+      "then": {
+        "properties": {
+          "event_seq": {"minimum": 1},
+          "event_id": {"type": "string", "pattern": "^.+\\|[0-9]{4}\\|[1-9][0-9]*$"},
+          "event_count": {"minimum": 1},
+          "mean_event_intensity_c": {"type": "number", "minimum": 0},
+          "compound_share_of_heat_days": {"type": "number", "minimum": 0, "maximum": 1},
+          "onset_doy": {"type": "integer", "minimum": 1, "maximum": 366},
+          "end_doy": {"type": "integer", "minimum": 1, "maximum": 366},
+          "duration_days": {"type": "integer", "minimum": 3},
+          "event_mean_excess_c": {"type": "number", "minimum": 0},
+          "event_cumulative_excess_cday": {"type": "number", "minimum": 0},
+          "antecedent_valid_days": {"type": "integer", "minimum": 0, "maximum": 14},
+          "sm_channel_complete_flag": {"type": "boolean"},
+          "drawdown_overlap_next_event": {"type": "boolean"}
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "recovery_observed": {"const": true},
+              "right_censored": {"const": false},
+              "recovery_days": {"type": "integer", "minimum": 0, "maximum": 30},
+              "censor_reason": {"const": "recovered"}
+            }
+          },
+          {
+            "properties": {
+              "recovery_observed": {"const": false},
+              "right_censored": {"const": true},
+              "recovery_days": {"type": "integer", "minimum": 0, "maximum": 30},
+              "censor_reason": {"enum": ["next-event", "ma-end", "data-end", "thirty-day-limit"]}
+            }
+          },
+          {
+            "properties": {
+              "recovery_observed": {"type": "null"},
+              "right_censored": {"type": "null"},
+              "recovery_days": {"type": "null"},
+              "censor_reason": {"const": "insufficient-sm"}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_indicator": {"const": true},
+          "is_grid_year_representative": {"const": true}
+        },
+        "required": ["event_indicator", "is_grid_year_representative"]
+      },
+      "then": {"properties": {"event_seq": {"const": 1}}}
+    },
+    {
+      "if": {"properties": {"recovery_observed": {"const": true}}, "required": ["recovery_observed"]},
+      "then": {
+        "properties": {
+          "right_censored": {"const": false},
+          "recovery_days": {"type": "integer", "minimum": 0, "maximum": 30},
+          "sm_channel_complete_flag": {"const": true},
+          "antecedent_smrz": {"type": "number", "minimum": 0, "maximum": 1},
+          "event_min_smrz": {"type": "number", "minimum": 0, "maximum": 1},
+          "drawdown_smrz": {"type": "number"},
+          "censor_reason": {"const": "recovered"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"right_censored": {"const": true}}, "required": ["right_censored"]},
+      "then": {
+        "properties": {
+          "recovery_observed": {"const": false},
+          "recovery_days": {"type": "integer", "minimum": 0, "maximum": 30},
+          "censor_reason": {"enum": ["next-event", "ma-end", "data-end", "thirty-day-limit"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"censor_reason": {"const": "insufficient-sm"}}, "required": ["censor_reason"]},
+      "then": {
+        "properties": {
+          "recovery_observed": {"type": "null"},
+          "right_censored": {"type": "null"},
+          "recovery_days": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"sm_channel_complete_flag": {"const": true}}, "required": ["sm_channel_complete_flag"]},
+      "then": {
+        "properties": {
+          "antecedent_valid_days": {"const": 14},
+          "antecedent_smrz": {"type": "number", "minimum": 0, "maximum": 1},
+          "event_min_smrz": {"type": "number", "minimum": 0, "maximum": 1},
+          "drawdown_smrz": {"type": "number"}
+        }
+      }
+    }
+  ]
+}

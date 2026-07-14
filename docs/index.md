@@ -13,6 +13,7 @@ title: 项目入口
 - [逐版本数据、方法与结果呈现变化](VERSION_CHANGELOG.md)
 - [版本总表](VERSION_MAP.md)
 - [数据谱系](DATA_LINEAGE.md)
+- [当前数据资产、面板与实证入口](DATA_ASSET_INVENTORY.md)
 - [对话与修改证据](CONVERSATION_EVIDENCE.md)
 - [Git 前版本重建缺口](PRE_GIT_RECONSTRUCTION_GAPS.md)
 - [公开结果索引](results/)

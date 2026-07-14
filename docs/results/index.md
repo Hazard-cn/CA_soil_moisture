@@ -16,4 +16,10 @@ title: 公开结果索引
 - [G185 响应面 v3 审阅摘要](g185-response-surface-v3/report.md)
 - [G185 区域连续灌溉边界](g185-region-irrigation-boundary/report.md)
 
+## 审核通过的STOP报告
+
+- [地区异质温度阈值方向Stage 1 STOP](regional-threshold-sr-v1/report.md)
+- [G185旧方法统一方向稳定性STOP](g185-old-method-unified-v1/report.md)
+- [事件强度—持续时间方向small smoke审查STOP](compound-event-intensity-duration-v1/report.md)
+
 发布政策和目录要求见 [README](README.md)。

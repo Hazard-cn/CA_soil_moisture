@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.regression-sr/contracts/run_manifest.schema.json",
+  "title": "SR portfolio run_manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "canonical_id",
+    "run_id",
+    "created_utc",
+    "status",
+    "not_for_inference",
+    "design_version",
+    "git_commit",
+    "data_family",
+    "inputs",
+    "sample_predicate",
+    "sample_key_serialization",
+    "sample_key_sha256",
+    "outcome",
+    "exposure_definition",
+    "fixed_effects",
+    "inference",
+    "seed",
+    "claims",
+    "verification"
+  ],
+  "properties": {
+    "contract_version": {"const": "run-manifest-v1"},
+    "canonical_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "status": {"type": "string", "enum": ["DESIGN", "SMOKE", "FULL", "STOP", "FAILED", "REVIEWED"]},
+    "not_for_inference": {"type": "boolean"},
+    "design_version": {"type": "string", "minLength": 1},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+    "data_family": {"type": "string", "enum": ["V1", "V3", "GGCP10-G185"]},
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "bytes", "sha256"],
+        "properties": {
+          "role": {"type": "string"},
+          "path": {"type": "string"},
+          "bytes": {"type": "integer", "minimum": 0},
+          "md5": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "sample_predicate": {"type": "string", "minLength": 1},
+    "sample_key_serialization": {"type": "string", "minLength": 1},
+    "sample_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sample_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "outcome": {"type": "string", "minLength": 1},
+    "exposure_definition": {"type": "string", "minLength": 1},
+    "soil_moisture_roles": {"type": "array", "items": {"type": "string"}},
+    "fixed_effects": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "bootstrap_reps", "spatial_block_degrees", "multiplicity"],
+      "properties": {
+        "primary": {"type": "string"},
+        "bootstrap_reps": {"type": "integer", "minimum": 0},
+        "spatial_block_degrees": {"type": ["number", "null"]},
+        "spatial_hac_km": {"type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": true},
+        "multiplicity": {"type": "string"}
+      }
+    },
+    "ca_quantiles": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "p25": {"type": "number"},
+        "p50": {"type": "number"},
+        "p75": {"type": "number"},
+        "population": {"type": "string"}
+      }
+    },
+    "exposure_endpoints": {"type": ["object", "null"]},
+    "seed": {"const": 42},
+    "claims": {"type": "array", "items": {"type": "string"}},
+    "stop_rules_triggered": {"type": "array", "items": {"type": "string"}},
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "status"],
+        "properties": {
+          "check": {"type": "string"},
+          "status": {"type": "string", "enum": ["PASS", "FAIL", "SKIP"]},
+          "detail": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

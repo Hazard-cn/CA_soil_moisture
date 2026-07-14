@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.regression-sr/contracts/threshold_grid.schema.json",
+  "title": "SR portfolio threshold_grid record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "grid_id",
+    "latitude",
+    "longitude",
+    "source_crs",
+    "source_resolution_degrees",
+    "source_md5",
+    "source_sha256",
+    "mapping_method",
+    "coverage_flag"
+  ],
+  "properties": {
+    "contract_version": {"const": "threshold-grid-v1"},
+    "grid_id": {"type": "string", "minLength": 1},
+    "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+    "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+    "source_crs": {"const": "EPSG:4326"},
+    "source_resolution_degrees": {"const": 0.5},
+    "source_md5": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_row": {"type": ["integer", "null"], "minimum": 0, "maximum": 75},
+    "source_col": {"type": ["integer", "null"], "minimum": 0, "maximum": 513},
+    "source_pixel_id": {"type": ["integer", "null"], "minimum": 0, "maximum": 39063},
+    "source_cell_west": {"type": ["number", "null"]},
+    "source_cell_east": {"type": ["number", "null"]},
+    "source_cell_south": {"type": ["number", "null"]},
+    "source_cell_north": {"type": ["number", "null"]},
+    "threshold_c": {"type": ["number", "null"]},
+    "mapping_method": {"const": "center-in-pixel-pixel-is-area"},
+    "coverage_flag": {"type": "boolean"},
+    "coverage_reason": {
+      "type": ["string", "null"],
+      "enum": ["valid", "outside-raster", "source-nodata", null]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"coverage_flag": {"const": true}}},
+      "then": {
+        "required": ["source_row", "source_col", "source_pixel_id", "threshold_c"],
+        "properties": {
+          "source_row": {"type": "integer", "minimum": 0, "maximum": 75},
+          "source_col": {"type": "integer", "minimum": 0, "maximum": 513},
+          "source_pixel_id": {"type": "integer", "minimum": 0, "maximum": 39063},
+          "threshold_c": {"type": "number"},
+          "coverage_reason": {"const": "valid"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"coverage_flag": {"const": false}}},
+      "then": {
+        "required": ["coverage_reason"],
+        "properties": {
+          "coverage_reason": {"enum": ["outside-raster", "source-nodata"]},
+          "threshold_c": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"coverage_reason": {"const": "source-nodata"}}, "required": ["coverage_reason"]},
+      "then": {
+        "required": ["source_row", "source_col", "source_pixel_id"],
+        "properties": {
+          "source_row": {"type": "integer", "minimum": 0, "maximum": 75},
+          "source_col": {"type": "integer", "minimum": 0, "maximum": 513},
+          "source_pixel_id": {"type": "integer", "minimum": 0, "maximum": 39063}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"coverage_reason": {"const": "outside-raster"}}, "required": ["coverage_reason"]},
+      "then": {
+        "properties": {
+          "source_row": {"type": "null"},
+          "source_col": {"type": "null"},
+          "source_pixel_id": {"type": "null"},
+          "source_cell_west": {"type": "null"},
+          "source_cell_east": {"type": "null"},
+          "source_cell_south": {"type": "null"},
+          "source_cell_north": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

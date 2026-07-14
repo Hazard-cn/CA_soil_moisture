@@ -1378,6 +1378,29 @@ drought-only Model 8；mediator和yield两方程；baseline-local、pooled-state
 - 规则代码：`repo://data_build/scripts/python/s10_export.py`；代码 SHA-256=`未记录`。
 - 状态：`reference`；verified_at=`2026-07-14`；supersedes=`none`。
 
+#### `sample-regional-threshold-pre-edd` — Five-zone pre-EDD complete-case support sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"columns":["ln_yield","ca","gdd_10_29","pr_sum","v3_doy","he_doy","ma_doy","gleam_smrz_mean"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|ln_yield=1|ca=1|gdd_10_29=1|pr_sum=1|v3_doy=1|he_doy=1|ma_doy=1|gleam_smrz_mean=1`。
+- 样本规模：rows=66396；grids=21337；区域计数=`{"HHH":{"rows":13165,"grids":3844},"NE":{"rows":25041,"grids":7365},"NW":{"rows":5540,"grids":2228},"SH":{"rows":4556,"grids":1692},"SW":{"rows":18094,"grids":6208}}`。
+- 规则代码：`repo://scripts/python/audit_regional_threshold_coverage.py`；代码 SHA-256=`f8c84ce75aa0e29a1f59bdebb7f74cec5914de05ada6d39f4521d8462448a481`。
+- 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
+
+#### `sample-compound-event-smoke-v2` — Compound-event deterministic small-smoke interface sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"rule":"first two eligible grid-year rows within each zone-year after deterministic sort","active":1}]}`。
+- 规则向量：`named_zones=1|first_two_per_zone_year=1|interface_only=1`。
+- 样本规模：rows=40；grids=20；区域计数=`{"HHH":{"rows":8,"grids":3},"NE":{"rows":8,"grids":3},"NW":{"rows":8,"grids":5},"SH":{"rows":8,"grids":6},"SW":{"rows":8,"grids":3}}`。
+- 规则代码：`repo://scripts/python/run_hotdry_event_stage1.py`；代码 SHA-256=`e8adb78193a1358901048155e45a336e6cecdbe7ba33df0db68a2d3786b00b93`。
+- 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
+
+直接子版本或组件：
+
+| 子节点 | 日期 | 状态 | 相对变化摘要 |
+|---|---|---|---|
+| `regional-threshold-sr-v1` | 2026-07-14 | `reference` | Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate |
+| `compound-event-intensity-duration-v1` | 2026-07-15 | `reference` | Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major |
+
 ### 方法变化
 
 s10_export执行字段筛选、别名和序列化；不涉及estimand、FE、cluster或bootstrap
@@ -2311,6 +2334,12 @@ grid/year FE两方程IE/DE/TE、region FE、continuous irrigation triple及pheno
 - 规则代码：`repo://scripts/python/expanded_scale_story_search.py`；代码 SHA-256=`cabb1a038b1efb3b6ce88fd4f81c9eb3e086372554f2d43d3ea886f9626bb712`。
 - 状态：`current`；verified_at=`2026-07-14`；supersedes=`none`。
 
+直接子版本或组件：
+
+| 子节点 | 日期 | 状态 | 相对变化摘要 |
+|---|---|---|---|
+| `g185-old-method-unified-v1` | 2026-07-14 | `reference` | Unified the historical linear two-equation evidence and added province-by-year fixed effects, spatial-block inference and explicit stability adjudication |
+
 ### 方法变化
 
 旧线性grid/year FE两方程；IE=(a1+a3s)b、DE=c1+c3s、TE=IE+DE；grid wild-score linearized bootstrap 999 reps；seed 42
@@ -2396,3 +2425,192 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 
 - 综合变化：Estimated region-specific continuous irrigation triple interactions and support-aware margins
 - 证据限制：Separate estimand from IE-DE-TE; HHH heat and hot-dry intervals cross zero while NE drought is supported
+
+## `g185-old-method-unified-v1` — G185 old-method unified direction v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-14；`reference`；`reviewed_failure_record` |
+| 父版/取代关系 | parent=`g185-old-method-corrected`；supersedes=`none` |
+| 当前用途 | Reviewed failure evidence only; not a submission candidate；truth role=`reviewed_failure_stop_stability` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+沿用冻结G185虚拟样本46,299行、13,236 grids；五命名区44,556行、12,745 grids；输入哈希与双样本键哈希均登记
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `g185-old-method-unified-run-manifest-v2` | result-manifest | present | 未记录 | `local://temp/2026-07-15_g185_old_method_unified_full_stop_v2/run_manifest.json` |
+| `g185-old-method-unified-full-manifest-v2` | audit-manifest | present | 未记录 | `local://temp/2026-07-15_g185_old_method_unified_full_stop_v2/full_manifest.json` |
+| `g185-old-method-unified-public-stop-report` | public-result | present | 未记录 | `repo://docs/results/g185-old-method-unified-v1/report.md` |
+| `g185-old-method-unified-package-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_g185_full_stop_v2_package_review_round2.md` |
+| `g185-old-method-unified-public-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_g185_public_failure_report_review_round2_pass.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-g185` — G185 frozen scale
+
+- 谓词：`{"all":[{"column":"ggcp10_maize_frac","operator":">=","value":0.05},{"rule":"main_sample","active":1},{"rule":"zone_core","active":0},{"rule":"yield_domain","active":1},{"rule":"yield_jump","active":1},{"rule":"sm_sd","active":1},{"rule":"sm_coverage","active":0},{"rule":"sr_within","active":0},{"rule":"years_ge3","active":0},{"rule":"stable_province","active":0}]}`。
+- 规则向量：`crop_mask=ggcp10>=0.05|main_sample=1|zone_core=0|yield_domain=1|yield_jump=1|sm_sd=1|sm_coverage=0|sr_within=0|years_ge3=0|stable_province=0`。
+- 样本规模：rows=46299；grids=13236；区域计数=`{"HHH":{"rows":12213},"NE":{"rows":20794},"NW":{"rows":3414},"Other":{"rows":1743},"SH":{"rows":903},"SW":{"rows":7232}}`。
+- 规则代码：`repo://scripts/python/expanded_scale_story_search.py`；代码 SHA-256=`cabb1a038b1efb3b6ce88fd4f81c9eb3e086372554f2d43d3ea886f9626bb712`。
+- 状态：`current`；verified_at=`2026-07-14`；supersedes=`none`。
+
+### 方法变化
+
+复现IE=(a1+a3s)b、DE=c1+c3s、TE=IE+DE，并新增grid FE+province-year FE、2度Rademacher/Webb 1,999次、Romano-Wolf、Holm及100/200/300 km HAC
+
+#### `method-g185-old-method-unified-stop`
+
+- Outcome / estimand：ln_yield_raw paired with gleam_smrz_mean_raw equation；Historical IE=(a1+a3s)b, DE=c1+c3s and TE=IE+DE plus province-year stability adjudication。
+- Exposure / mediator：D_full_raw; hdd_ge32_raw; HotDryPr_full_raw; ca_raw interactions；Contemporaneous gleam_smrz_mean_raw algebraic component。
+- Controls / FE：Companion hazards; precipitation; ET0; GDD; irrigation; aridity；Grid FE plus year FE historically; grid FE plus province-by-year FE for the added stability layer。
+- Inference：Synchronous 2-degree spatial-block inference; 15-test Romano-Wolf stepdown; Holm and 100/200/300 km HAC checks；bootstrap=Grid Rademacher 999 and 2-degree Rademacher or Webb 1999；reps=1999；seed=42。
+- 代码入口：`repo://scripts/python/run_g185_old_method_full.py`。
+- 解释边界：FULL_STOP because NE drought same-direction nonlinear endpoint draws were 84.1921%, below the frozen 90% gate; components are not causal mediation。
+
+### 结果呈现变化
+
+发布包含全部15组区域结果的完整失败报告；东北干旱同向draw 84.1921%低于90%门槛，因此不生成投稿图或候选小稿
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-g185-old-method-unified-stop-v2-20260715` | `g185-virtual-sample\|ggcp10-baseline-suite\|data-v3-expanded-main-dta` | `sample-g185` | `method-g185-old-method-unified-stop` | `repo://scripts/python/run_g185_old_method_full.py` | `local://temp/2026-07-15_g185_old_method_unified_full_stop_v2/run_manifest.json\|local://temp/2026-07-15_g185_old_method_unified_full_stop_v2/full_manifest.json` | `repo://docs/results/g185-old-method-unified-v1/report.md` | verified_current |
+
+### 相对前版与证据边界
+
+- 综合变化：Unified the historical linear two-equation evidence and added province-by-year fixed effects, spatial-block inference and explicit stability adjudication
+- 证据限制：PASS_FAILURE_PACKAGE does not lift FULL_STOP; the historical corrected result remains a context version rather than a successful descendant claim
+
+## `regional-threshold-sr-v1` — Regional heterogeneous temperature threshold SR direction v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-14；`reference`；`reviewed_failure_record` |
+| 父版/取代关系 | parent=`data-v3-main`；supersedes=`none` |
+| 当前用途 | Reviewed failure evidence only; not a submission candidate；truth role=`reviewed_failure_stop_data_support` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+使用69,038行V3 Stata面板与官方0.5度maize.tif；五区pre-EDD complete-case为66,396行、21,337 grids；西南有效阈值覆盖12,637/18,094=69.8408%
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `regional-threshold-maize-raster` | raw-input | present | 未记录 | `external://zenodo/records/17142122/maize.tif` |
+| `regional-threshold-grid-v1` | threshold-map | present | 22180×19 | `local://temp/2026-07-14_regional_threshold_stage1_audit_v5/threshold_grid.csv` |
+| `regional-threshold-run-manifest-v5` | result-manifest | present | 未记录 | `local://temp/2026-07-14_regional_threshold_stage1_audit_v5/run_manifest.json` |
+| `regional-threshold-audit-manifest-v5` | audit-manifest | present | 未记录 | `local://temp/2026-07-14_regional_threshold_stage1_audit_v5/audit_manifest.json` |
+| `regional-threshold-public-stop-report` | public-result | present | 未记录 | `repo://docs/results/regional-threshold-sr-v1/report.md` |
+| `regional-threshold-review-round3` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-14_threshold_review_round3_pass.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-regional-threshold-pre-edd` — Five-zone pre-EDD complete-case support sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"columns":["ln_yield","ca","gdd_10_29","pr_sum","v3_doy","he_doy","ma_doy","gleam_smrz_mean"],"operator":"all_not_missing"}]}`。
+- 规则向量：`named_zones=1|ln_yield=1|ca=1|gdd_10_29=1|pr_sum=1|v3_doy=1|he_doy=1|ma_doy=1|gleam_smrz_mean=1`。
+- 样本规模：rows=66396；grids=21337；区域计数=`{"HHH":{"rows":13165,"grids":3844},"NE":{"rows":25041,"grids":7365},"NW":{"rows":5540,"grids":2228},"SH":{"rows":4556,"grids":1692},"SW":{"rows":18094,"grids":6208}}`。
+- 规则代码：`repo://scripts/python/audit_regional_threshold_coverage.py`；代码 SHA-256=`f8c84ce75aa0e29a1f59bdebb7f74cec5914de05ada6d39f4521d8462448a481`。
+- 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
+
+### 方法变化
+
+仅执行原始PixelIsArea单元中心映射和确定性覆盖审计；未执行EDD、固定效应、bootstrap、物候窗口或产量模型
+
+#### `method-regional-threshold-stage1`
+
+- Outcome / estimand：No outcome model；Five-zone share of pre-EDD complete-case rows receiving an unmodified official continuous maize threshold。
+- Exposure / mediator：Official 0.5-degree continuous maize threshold mapped to the containing PixelIsArea cell；GLEAM SMrz appears only in the frozen support predicate。
+- Controls / FE：No regression controls; support denominator requires ln_yield, ca, GDD10-29, precipitation, phenology dates and GLEAM SMrz；None。
+- Inference：Deterministic coverage counts and schema or semantic validation only；bootstrap=none；reps=0；seed=42。
+- 代码入口：`repo://scripts/python/audit_regional_threshold_coverage.py`。
+- 解释边界：STOP before EDD construction or yield estimation because SW coverage is below 80%; no SR effect may be inferred。
+
+### 结果呈现变化
+
+发布Stage 1失败报告、机器manifest和独立Round 3审查；报告完整五区覆盖及不得用插值解除STOP的边界
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-regional-threshold-stage1-v5-20260714` | `data-v3-expanded-main-dta\|regional-threshold-maize-raster` | `sample-regional-threshold-pre-edd` | `method-regional-threshold-stage1` | `repo://scripts/python/audit_regional_threshold_coverage.py` | `local://temp/2026-07-14_regional_threshold_stage1_audit_v5/run_manifest.json\|local://temp/2026-07-14_regional_threshold_stage1_audit_v5/audit_manifest.json` | `repo://docs/results/regional-threshold-sr-v1/report.md` | verified_current |
+
+### 相对前版与证据边界
+
+- 综合变化：Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate
+- 证据限制：PASS_PUBLIC_STOP_REPORT 97/100; STOP_DATA_SUPPORT_GATE; no SR buffering coefficient exists
+
+## `compound-event-intensity-duration-v1` — Compound-event intensity-duration SR direction v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-15；`reference`；`reviewed_failure_record` |
+| 父版/取代关系 | parent=`data-v3-main`；supersedes=`none` |
+| 当前用途 | Reviewed failure evidence only; not a submission candidate；truth role=`reviewed_failure_stop_smoke_review` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个grid-years和75条事件接口记录；全量五区支持审计未完成
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `compound-event-tmax-aligned-series` | raw-input | present | 未记录 | `external://daily-temp-cn/daily_temp_{year}.nc` |
+| `compound-event-precip-aligned-series` | raw-input | present | 未记录 | `external://processed-panel-cn/pre-0.1deg/chm-pre-0.1deg-{year}.nc` |
+| `compound-event-smrz-aligned-series` | raw-input | present | 未记录 | `external://processed-panel-cn/gleam-sm-0.1deg-tempgrid-{year}.nc` |
+| `compound-event-smoke-panel-v2` | smoke-interface-output | present | 75×37 | `local://temp/2026-07-15_compound_event_interface_smoke_v2/event_panel.csv.gz` |
+| `compound-event-input-inventory-v2` | input-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_interface_smoke_v2/input_inventory.json` |
+| `compound-event-run-manifest-v2` | result-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_interface_smoke_v2/run_manifest.json` |
+| `compound-event-extension-v2` | audit-manifest | present | 未记录 | `local://temp/2026-07-15_compound_event_interface_smoke_v2/event_run_extension.json` |
+| `compound-event-public-stop-report` | public-result | present | 未记录 | `repo://docs/results/compound-event-intensity-duration-v1/report.md` |
+| `compound-event-smoke-review-round2` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_hotdry_event_smoke_review_round2_stop.md` |
+| `compound-event-public-review` | review-record | present | 未记录 | `repo://quality_reports/plans/2026-07-15_hotdry_event_public_stop_review_pass.md` |
+
+本版本运行使用或定义的样本规则：
+
+#### `sample-compound-event-smoke-v2` — Compound-event deterministic small-smoke interface sample
+
+- 谓词：`{"all":[{"column":"zone","operator":"in","values":["NE","HHH","NW","SH","SW"]},{"rule":"first two eligible grid-year rows within each zone-year after deterministic sort","active":1}]}`。
+- 规则向量：`named_zones=1|first_two_per_zone_year=1|interface_only=1`。
+- 样本规模：rows=40；grids=20；区域计数=`{"HHH":{"rows":8,"grids":3},"NE":{"rows":8,"grids":3},"NW":{"rows":8,"grids":5},"SH":{"rows":8,"grids":6},"SW":{"rows":8,"grids":3}}`。
+- 规则代码：`repo://scripts/python/run_hotdry_event_stage1.py`；代码 SHA-256=`e8adb78193a1358901048155e45a336e6cecdbe7ba33df0db68a2d3786b00b93`。
+- 状态：`historical`；verified_at=`2026-07-15`；supersedes=`none`。
+
+### 方法变化
+
+事件定义固定为窗口内Tmax>=32C且降水<1 mm连续至少3天；仅测试事件、antecedent SM、drawdown和recovery接口；未估计FE、IPCW/RMST或产量模型
+
+#### `method-compound-event-smoke-v2`
+
+- Outcome / estimand：No outcome model in reviewed smoke; ln_yield was preregistered but not estimated；Deterministic event, antecedent SM, drawdown and recovery interface reproducibility only。
+- Exposure / mediator：Tmax>=32C and precipitation<1 mm/day for at least three consecutive days within v3_doy-30 through ma_doy；GLEAM SMrz antecedent state, drawdown and recovery or censoring fields。
+- Controls / FE：GDD10-29 and precipitation controls were preregistered but not used in smoke；Grid and province-by-year FE were preregistered but not estimated。
+- Inference：No empirical inference; row, contract, hash and point-versus-bulk index checks only；bootstrap=none；reps=0；seed=42。
+- 代码入口：`repo://scripts/python/run_hotdry_event_stage1.py`。
+- 解释边界：STOP_AT_SMOKE_REVIEW after Round 2 retained an unregistered-test identity Major; full support, IPCW/RMST and yield models were not run。
+
+### 结果呈现变化
+
+发布两轮small-smoke审查失败报告；Round 2因第三个runner测试文件未锁定输入身份而STOP_AT_SMOKE_REVIEW
+
+关联运行与结果载体：
+
+| Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
+|---|---|---|---|---|---|---|---|
+| `run-compound-event-interface-smoke-v2-20260715` | `data-v3-expanded-main-dta\|compound-event-tmax-aligned-series\|compound-event-precip-aligned-series\|compound-event-smrz-aligned-series` | `sample-compound-event-smoke-v2` | `method-compound-event-smoke-v2` | `repo://scripts/python/run_hotdry_event_stage1.py` | `local://temp/2026-07-15_compound_event_interface_smoke_v2/run_manifest.json\|local://temp/2026-07-15_compound_event_interface_smoke_v2/event_run_extension.json` | `repo://docs/results/compound-event-intensity-duration-v1/report.md` | verified_sensitivity |
+
+### 相对前版与证据边界
+
+- 综合变化：Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major
+- 证据限制：Design review passed 92/100, but smoke review stopped at 89/100 after the frozen two-round limit; no support counts or empirical coefficients may be claimed

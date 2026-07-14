@@ -71,3 +71,5 @@
 （纠正和经验将记录在此）
 - [LEARN:estimand] 旧区域主图把 1.50%、3.27%、2.56% 称为 TE -> 这些数值是控制同期根区土壤水分后的 DE / residual component；按旧方程定义的区域 TE 必须计算 `IE + DE`，对应核心修正版为 1.85%、3.17%、2.43%。
 - [LEARN:path] 仓库内 `data/processed/data_v1_with_climate.csv` 被当作真实入口 -> 当前真实 V1 入口是 `C:/YangSu/00_Project/CA_mechanism/data/master/data_v1_with_climate.csv`。
+- [LEARN:method] 假定 rank 1 文献的 EDD 算法使用逐日 Tmax/Tmin 计算阈值以上 degree-days -> `CalExposure.m` 实际统计生育期逐小时温度达到连续阈值的小时数，并以除以 24 得到暴露天数；精确移植必须使用逐小时 `phase_data`，逐日近似只能另列为敏感性分析。
+- [LEARN:repro] G185冻结样本键SHA-256 `5474250d...`被标成 `sample-key-csv-v1` -> 该值的确切历史序列化是按数值型grid_id/year排序、逐行写为 `grid_id|year`、LF连接、无表头且无末尾LF；历史兼容哈希和规范化CSV哈希必须分别登记与断言。

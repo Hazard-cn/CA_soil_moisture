@@ -15,6 +15,12 @@
 - [`g185-response-surface-v3`](g185-response-surface-v3/report.md)：低自由度 drought-heat response surface 的审阅与敏感性判定。
 - [`g185-region-irrigation-boundary`](g185-region-irrigation-boundary/report.md)：old-method 区域连续灌溉三重交互边界。
 
+## 审核通过的STOP报告
+
+- [`regional-threshold-sr-v1`](regional-threshold-sr-v1/report.md)：官方连续玉米热害阈值在西南产区覆盖不足80%，方向停止于Stage 1数据支持门槛；未运行EDD或产量模型。
+- [`g185-old-method-unified-v1`](g185-old-method-unified-v1/report.md)：历史结果完成复现，但东北干旱空间扰动同向比例为84.19%、低于90%稳定性门槛；不进入候选稿。
+- [`compound-event-intensity-duration-v1`](compound-event-intensity-duration-v1/report.md)：事件接口完成两轮small smoke审查后仍有一项可复现性Major，按两轮上限停止；全量支持审计和模型均未运行。
+
 ## 发布要求
 
 每个结果目录使用 `docs/results/<canonical-id>/`，至少包含 `report.md` 或 `report.html`。报告必须写明 canonical ID、数据版、分析 scale、估计量、日期、生成脚本、解释边界及可复核位置。若结果改变数据口径、样本、方法、estimand 或呈现方式，应分别更新 `data_change`、`method_change`、`result_presentation_change`，同步维护规范化 lineage registries，并重新生成版本文档。
