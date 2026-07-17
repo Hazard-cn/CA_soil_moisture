@@ -2,6 +2,10 @@
 
 本仓库包含 V1-V6、GGCP10、G185 以及联合胁迫响应面等多个历史和并行分析分支。不同分支的样本、固定效应、估计量和图表不能直接混合引用；当前 G185 工作应从下列入口开始。
 
+## GPT网页端统一入口
+
+需要由GPT网页端或外部合作者读取当前三个实证方向、37篇参考文献方法索引和2026-07-15外部审阅修正时，从[`report-sr-method-portfolio-web-reader-v1`](docs/results/report-sr-method-portfolio-web-reader-v1/report.md)开始。该入口区分机器事实、外部审阅意见和待冻结的新方案，并提供可直接使用的[网页端任务说明](docs/results/report-sr-method-portfolio-web-reader-v1/GPT_WEB_PROMPT.md)。
+
 ## 仓库导航
 
 - [版本体系与当前入口](docs/VERSIONING.md)

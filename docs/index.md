@@ -9,6 +9,7 @@ title: 项目入口
 
 ## 入口
 
+- [GPT网页端：三个实证方向、37篇文献与外部审阅统一入口](results/report-sr-method-portfolio-web-reader-v1/report.md)
 - [版本体系与当前分析入口](VERSIONING.md)
 - [逐版本数据、方法与结果呈现变化](VERSION_CHANGELOG.md)
 - [版本总表](VERSION_MAP.md)
