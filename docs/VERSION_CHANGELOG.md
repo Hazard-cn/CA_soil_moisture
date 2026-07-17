@@ -2479,7 +2479,7 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 
 | 子节点 | 日期 | 状态 | 相对变化摘要 |
 |---|---|---|---|
-| `g185-old-method-unified-override-v1` | 2026-07-15 | `current_parallel` | Continued the previously stopped G185 branch under the user-authorized nonblocking stability gate and assembled the historical national, continuous regional and five-zone algebraic evidence into one reviewed candidate |
+| `g185-old-method-unified-override-v1` | 2026-07-15 | `reference` | Continued the previously stopped G185 branch under the user-authorized nonblocking stability gate and assembled the historical national, continuous regional and five-zone algebraic evidence into one reviewed candidate |
 
 ### 方法变化
 
@@ -2581,9 +2581,9 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 
 | 项目 | 内容 |
 |---|---|
-| 时间与状态 | 2026-07-15；`current_parallel`；`analysis_release` |
+| 时间与状态 | 2026-07-15；`reference`；`analysis_release` |
 | 父版/取代关系 | parent=`compound-event-intensity-duration-v1`；supersedes=`none` |
-| 当前用途 | Reviewed candidate manuscript; not 95 publication-ready；truth role=`current_reviewed_event_duration_intensity_candidate` |
+| 当前用途 | Historical internal candidate record with unresolved event-model Critical; not a current submission candidate；truth role=`historical_internal_candidate_under_event_structure_revision` |
 | 证据 | `git-native`；关联脱敏对话 0 个 |
 
 ### 数据变化
@@ -2627,7 +2627,7 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 
 ### 结果呈现变化
 
-发布中文候选小稿、自包含三图HTML和全部非显著与边界结果；独立Round 2为PASS_CANDIDATE 91/100、0 Critical/Major；不称为95分投稿完成稿
+保留2026-07-15内部候选小稿和自包含三图；2026-07-18增加主设计缺少事件指示变量的结构审计，明确现有结果是含无事件0值的季节聚合暴露关系；未重新估计模型
 
 关联运行与结果载体：
 
@@ -2638,7 +2638,7 @@ region-specific hazard×SR×irrigation triple interaction；grid/year FE；grid 
 ### 相对前版与证据边界
 
 - 综合变化：Continued the stopped smoke branch to full five-zone event, yield and soil-moisture analyses and made the triggered joint duration-intensity model the reviewed main specification
-- 证据限制：可公开主张限于黄淮海持续时间条件变化差异并须同时披露低SR负变化转为高SR正变化；不得声称全国一致缓冲、因果效应、因果中介、独立稳健强度结果或SM恢复通道确认
+- 证据限制：内部91分记录不再代表当前投稿就绪度；修正后的事件发生与严重程度两部分模型必须使用新canonical ID
 
 ## `compound-event-intensity-duration-v1` — Compound-event intensity-duration SR direction v1
 
@@ -2682,7 +2682,7 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 | 子节点 | 日期 | 状态 | 相对变化摘要 |
 |---|---|---|---|
-| `compound-event-intensity-duration-override-v1` | 2026-07-15 | `current_parallel` | Continued the stopped smoke branch to full five-zone event, yield and soil-moisture analyses and made the triggered joint duration-intensity model the reviewed main specification |
+| `compound-event-intensity-duration-override-v1` | 2026-07-15 | `reference` | Continued the stopped smoke branch to full five-zone event, yield and soil-moisture analyses and made the triggered joint duration-intensity model the reviewed main specification |
 
 ### 方法变化
 
@@ -2716,9 +2716,9 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 | 项目 | 内容 |
 |---|---|
-| 时间与状态 | 2026-07-15；`current_parallel`；`analysis_release` |
+| 时间与状态 | 2026-07-15；`reference`；`analysis_release` |
 | 父版/取代关系 | parent=`g185-old-method-unified-v1`；supersedes=`none` |
-| 当前用途 | Reviewed 92/100 candidate manuscript; not 95 publication-ready；truth role=`current_reviewed_g185_unified_candidate` |
+| 当前用途 | Historical internal candidate record with unresolved external method Major; not a current submission candidate；truth role=`historical_internal_candidate_under_external_method_revision` |
 | 证据 | `git-native`；关联脱敏对话 0 个 |
 
 ### 数据变化
@@ -2760,7 +2760,7 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 ### 结果呈现变化
 
-发布中文候选小稿Markdown和内嵌三图的自包含HTML；独立方法Round 2为90/100且无Critical/Major，后续自包含HTML终审为92/100；不把候选稿写成95分投稿完成稿
+保留2026-07-15内部候选小稿和自包含HTML；2026-07-18增加外部方法审阅提示、低高SR端点分类和强固定效应解释边界；未重新估计模型
 
 关联运行与结果载体：
 
@@ -2771,7 +2771,7 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 ### 相对前版与证据边界
 
 - 综合变化：Continued the previously stopped G185 branch under the user-authorized nonblocking stability gate and assembled the historical national, continuous regional and five-zone algebraic evidence into one reviewed candidate
-- 证据限制：东北干旱空间扰动同向比例84.1921%仍完整报告，旧FULL_STOP未被覆盖或解除；IE、DE和TE仅为两方程代数组件，不是因果中介
+- 证据限制：内部92分记录不再代表当前投稿就绪度；全国结果必须同时报告P25和P75端点，IE、DE和TE仅为两方程代数组件
 
 ## `regional-threshold-sr-override-v1` — Regional heterogeneous temperature threshold SR override v1
 
@@ -2835,3 +2835,42 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 - 综合变化：Continued past the historical coverage gate without imputing thresholds, executed the frozen external-threshold daily exposure model and retained the independent Round 2 failure decision
 - 证据限制：FAIL/REVIEWED_NOT_CANDIDATE；公共报告PASS不改变失败状态，不授权Round 3或更有利的阈值、窗口、样本与函数形式搜索
+
+## `report-sr-method-portfolio-web-reader-v1` — SR method portfolio GPT web reader v1
+
+| 项目 | 内容 |
+|---|---|
+| 时间与状态 | 2026-07-17；`umbrella`；`public_report_umbrella` |
+| 父版/取代关系 | parent=`none`；supersedes=`none` |
+| 当前用途 | Public web-reader and review entry; it does not produce a new empirical estimate；truth role=`public_web_reader_portfolio_index` |
+| 证据 | `git-native`；关联脱敏对话 0 个 |
+
+### 数据变化
+
+未改变数据、样本、变量口径或任何本地机器资产；仅发布脱敏Markdown摘要
+
+关联 artifact：
+
+| Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
+|---|---|---|---|---|
+| `report-sr-method-portfolio-web-reader-v1-public-report` | public-result | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/report.md` |
+| `report-sr-method-portfolio-web-reader-v1-gpt-prompt` | review-prompt | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/GPT_WEB_PROMPT.md` |
+| `report-sr-method-portfolio-web-reader-v1-portfolio-status` | public-result | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/portfolio/portfolio_status.md` |
+| `report-sr-method-portfolio-web-reader-v1-g185-endpoints` | public-result | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/portfolio/g185_endpoint_slopes.md` |
+| `report-sr-method-portfolio-web-reader-v1-external-review` | review-record | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/review/external_review_synthesis.md` |
+| `report-sr-method-portfolio-web-reader-v1-event-audit` | review-record | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/methods/event_model_structure_audit.md` |
+| `report-sr-method-portfolio-web-reader-v1-literature-readme` | literature-index | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/literature/README.md` |
+| `report-sr-method-portfolio-web-reader-v1-literature-ranked` | literature-index | present | 未记录 | `repo://docs/results/report-sr-method-portfolio-web-reader-v1/literature/final_ranked_literature.md` |
+
+### 方法变化
+
+未改变estimand、模型、固定效应、推断或数值；仅汇总既有结果和后续方法审阅边界
+
+### 结果呈现变化
+
+新增GitHub网页端阅读顺序、G185端点表、事件模型结构审计、37篇文献公开索引和可直接提交网页端的任务说明
+
+### 相对前版与证据边界
+
+- 综合变化：Published a GitHub-native reading entry for the three empirical directions, the 37-paper method inventory and the later external-review corrections
+- 证据限制：This umbrella does not restore the threshold direction as a candidate and does not convert internal candidate scores into current submission readiness

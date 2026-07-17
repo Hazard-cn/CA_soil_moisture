@@ -4,6 +4,10 @@
 
 各结果相对前版的数据、方法和结果呈现变化见 [`docs/VERSION_CHANGELOG.md`](../VERSION_CHANGELOG.md)，物理输入及转换关系见 [`docs/DATA_LINEAGE.md`](../DATA_LINEAGE.md)。
 
+## GPT网页端统一入口
+
+- [`report-sr-method-portfolio-web-reader-v1`](report-sr-method-portfolio-web-reader-v1/report.md)：集中提供三个实证方向的状态与解释更新、37篇文献方法索引、数据与estimand边界及可直接提交网页端的任务说明。该入口不产生新估计，也不改变三个方向的canonical状态。
+
 ## 当前结果
 
 - [`data-v3-expanded`](data-v3-expanded/report.md)：V3 expanded 三个物理视图、两类 hot-dry 定义与元数据运行 manifest。
@@ -15,10 +19,10 @@
 - [`g185-response-surface-v3`](g185-response-surface-v3/report.md)：低自由度 drought-heat response surface 的审阅与敏感性判定。
 - [`g185-region-irrigation-boundary`](g185-region-irrigation-boundary/report.md)：old-method 区域连续灌溉三重交互边界。
 
-## 当前候选稿
+## 历史内部候选记录与后续外部审阅
 
-- [`g185-old-method-unified-override-v1`](g185-old-method-unified-override-v1/report.html)：G185旧线性两方程全国、连续区域与五区证据统一稿；同目录保留[Markdown正文](g185-old-method-unified-override-v1/report.md)。独立审查92/100，IE/DE/TE仍仅解释为代数组件，尚非95分投稿完成稿。
-- [`compound-event-intensity-duration-override-v1`](compound-event-intensity-duration-override-v1/report.md)：热干事件持续时间—强度联合模型、五区异质性及SM时序证据；[自包含三图](compound-event-intensity-duration-override-v1/figures.html)。独立审查91/100，尚非95分投稿完成稿。
+- [`g185-old-method-unified-override-v1`](g185-old-method-unified-override-v1/report.md)：2026-07-15内部92/100候选记录；后续外部方法审阅发现端点分类与强固定效应披露Major，当前不是投稿候选。[自包含HTML](g185-old-method-unified-override-v1/report.html)保留历史版式，当前解释以[统一入口](report-sr-method-portfolio-web-reader-v1/report.md)为准。
+- [`compound-event-intensity-duration-override-v1`](compound-event-intensity-duration-override-v1/report.md)：2026-07-15内部91/100候选记录；后续确认28列主模型未包含事件指示变量，当前不是投稿候选。[自包含三图](compound-event-intensity-duration-override-v1/figures.html)保留历史结果，修正模型须使用新canonical ID。
 
 ## Override 完整执行后审核失败
 
@@ -26,7 +30,7 @@
 
 ## 审核通过的STOP报告
 
-- [`regional-threshold-sr-v1`](regional-threshold-sr-v1/report.md)：官方连续玉米热害阈值在西南产区覆盖不足80%，方向停止于Stage 1数据支持门槛；未运行EDD或产量模型。
+- [`regional-threshold-sr-v1`](regional-threshold-sr-v1/report.md)：历史Stage 1 STOP记录，当时以西南覆盖不足80%停止；该机械门槛已被后续用户授权取消，不是现行规则。后续override完整运行的失败状态见上一节。
 - [`g185-old-method-unified-v1`](g185-old-method-unified-v1/report.md)：历史结果完成复现，但东北干旱空间扰动同向比例为84.19%、低于90%稳定性门槛；不进入候选稿。
 - [`compound-event-intensity-duration-v1`](compound-event-intensity-duration-v1/report.md)：事件接口完成两轮small smoke审查后仍有一项可复现性Major，按两轮上限停止；全量支持审计和模型均未运行。
 
