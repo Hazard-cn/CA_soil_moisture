@@ -33,3 +33,4 @@
 - 为避免Windows `core.autocrlf` 改变第三方代码字节，发布目录在 `.gitattributes` 中设为 `-text`；141/141个清单条目的暂存blob字节数与SHA-256一致。
 - 仓库策略检查通过：733个暂存文件、210个Python文件，0错误；244个既有机器路径仅产生基线警告，本次未新增。
 - 谱系严格验证、文档一致性检查和8个谱系单元测试通过；仓库及本次发布共54个R文件解析通过。第三方代码未执行。
+- Windows pre-push按完整提交SHA读取长路径时，`git show`触发路径长度错误；策略脚本改用`git cat-file blob`直接读取Git对象，并须对index、HEAD和完整提交SHA分别复核。

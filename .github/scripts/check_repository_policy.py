@@ -280,7 +280,7 @@ def git_bytes(*args: str) -> bytes:
 
 def optional_git_blob(ref: str, relative: str) -> bytes | None:
     result = subprocess.run(
-        ["git", "show", f"{ref}:{relative}"],
+        ["git", "cat-file", "blob", f"{ref}:{relative}"],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -311,7 +311,7 @@ def tracked_files(source: str) -> list[str]:
 
 def blob_bytes(source: str, relative: str) -> bytes:
     object_name = f":{relative}" if source == "index" else f"{source}:{relative}"
-    return git_bytes("show", object_name)
+    return git_bytes("cat-file", "blob", object_name)
 
 
 def sensitive_filename(normalized: str) -> bool:
