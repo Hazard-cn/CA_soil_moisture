@@ -3,6 +3,11 @@
 .githooks/* text eol=lf
 *.sh text eol=lf
 
+# Preserve reviewed third-party literature-code bytes so FILE_MANIFEST hashes
+# remain invariant under Windows core.autocrlf.
+references/code/published-literature-37/** -text
+references/code/published-literature-37/** whitespace=-trailing-space,-space-before-tab
+
 *.dta binary
 *.parquet binary
 *.feather binary

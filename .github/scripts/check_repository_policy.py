@@ -130,6 +130,27 @@ GOVERNANCE_REGISTRY_FILES = {
 ALLOWED_SPECIAL_FILES = GOVERNANCE_REGISTRY_FILES | MACHINE_READABLE_SCHEMA_FILES
 RESULT_PREFIX = "docs/results/"
 RESULT_SUFFIXES = {".md", ".html"}
+PUBLISHED_LITERATURE_CODE_PREFIX = "references/code/published-literature-37/"
+PUBLISHED_LITERATURE_CODE_SUFFIXES = {
+    ".ado",
+    ".do",
+    ".f90",
+    ".gms",
+    ".m",
+    ".md",
+    ".mpsge",
+    ".ncl",
+    ".py",
+    ".r",
+    ".sh",
+    ".txt",
+}
+PUBLISHED_LITERATURE_CODE_BASENAMES = {
+    "citation",
+    "copying",
+    "description",
+    "license",
+}
 
 LEGACY_MACHINE_PATH_FILES = {
     item.casefold()
@@ -259,7 +280,7 @@ def git_bytes(*args: str) -> bytes:
 
 def optional_git_blob(ref: str, relative: str) -> bytes | None:
     result = subprocess.run(
-        ["git", "show", f"{ref}:{relative}"],
+        ["git", "cat-file", "blob", f"{ref}:{relative}"],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -290,7 +311,7 @@ def tracked_files(source: str) -> list[str]:
 
 def blob_bytes(source: str, relative: str) -> bytes:
     object_name = f":{relative}" if source == "index" else f"{source}:{relative}"
-    return git_bytes("show", object_name)
+    return git_bytes("cat-file", "blob", object_name)
 
 
 def sensitive_filename(normalized: str) -> bool:
@@ -571,11 +592,19 @@ def main() -> int:
         normalized = relative.replace("\\", "/")
         folded = normalized.casefold()
         suffix = PurePosixPath(normalized).suffix.casefold()
+        basename = PurePosixPath(normalized).name.casefold()
+        is_published_literature_code = folded.startswith(PUBLISHED_LITERATURE_CODE_PREFIX)
 
         if sensitive_filename(normalized):
             errors.append(f"Sensitive filename is tracked: {normalized}")
         elif folded in ALLOWED_SPECIAL_FILES:
             pass
+        elif is_published_literature_code:
+            if (
+                suffix not in PUBLISHED_LITERATURE_CODE_SUFFIXES
+                and basename not in PUBLISHED_LITERATURE_CODE_BASENAMES
+            ):
+                errors.append(f"Unsupported published literature code file: {normalized}")
         elif folded.startswith(FORBIDDEN_PREFIXES):
             errors.append(f"Forbidden tracked path: {normalized}")
         elif any(folded.endswith(item) for item in FORBIDDEN_SUFFIXES):

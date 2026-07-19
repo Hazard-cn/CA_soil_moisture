@@ -46,7 +46,12 @@ quality_reports/*
 !quality_reports/lineage/
 !quality_reports/lineage/**
 !quality_reports/version_registry.csv
-references/
+# Local references remain ignored except the reviewed, license-cleared literature code release.
+references/*
+!references/code/
+references/code/*
+!references/code/published-literature-37/
+!references/code/published-literature-37/**
 background_knowledge/
 reviews/
 
