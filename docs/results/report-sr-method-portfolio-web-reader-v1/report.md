@@ -55,6 +55,6 @@ title: SR缓冲机制方法组合：GPT网页端统一入口
 
 ## GitHub发布边界
 
-本目录只包含Markdown。图表使用既有方向目录中的自包含HTML：[G185正文与内嵌图](../g185-old-method-unified-override-v1/report.html)和[事件稿三图](../compound-event-intensity-duration-override-v1/figures.html)。原始及中间面板、CSV/DTA/Parquet、PNG/PDF、压缩包、bootstrap draws、模型对象、日志、Zotero全文和第三方代码均不进入Git历史。
+本目录只包含Markdown。图表使用既有方向目录中的自包含HTML：[G185正文与内嵌图](../g185-old-method-unified-override-v1/report.html)和[事件稿三图](../compound-event-intensity-duration-override-v1/figures.html)。原始及中间面板、CSV/DTA/Parquet、PNG/PDF、压缩包、bootstrap draws、模型对象、日志、Zotero全文以及许可证缺失或受限的第三方代码均不进入Git历史；许可证明确的纯文本代码单独发布于[许可代码子集](../../../references/code/published-literature-37/README.md)，且没有执行。
 
 本版本只改变结果的组织和公开入口，不改变数据、样本、方法、estimand、推断或数值。版本变化与谱系见[版本变化详表](../../VERSION_CHANGELOG.md)和[版本地图](../../VERSION_MAP.md)。
