@@ -13,6 +13,7 @@
 - [版本总表](docs/VERSION_MAP.md)
 - [数据谱系](docs/DATA_LINEAGE.md)
 - [当前数据资产、面板与实证入口](docs/DATA_ASSET_INVENTORY.md)
+- [2010—2019 气候与土壤水分胁迫面板运行说明（当前为 PARTIAL_SCOPE）](data_build/docs/CLIMATE_STRESS_PANEL_V1.md)
 - [对话与修改证据](docs/CONVERSATION_EVIDENCE.md)
 - [Git 前版本重建缺口](docs/PRE_GIT_RECONSTRUCTION_GAPS.md)
 - [公开结果索引](docs/results/README.md)

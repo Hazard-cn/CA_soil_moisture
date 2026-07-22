@@ -1,0 +1,24 @@
+# Runtime environment used for data-climate-stress-2010-2019-v1.
+# CPython 3.12.10; install into an isolated environment.
+certifi==2026.6.17
+cftime==1.6.5
+colorama==0.4.6
+iniconfig==2.3.0
+netCDF4==1.7.4
+numpy==2.4.1
+packaging==26.2
+pandas==2.3.3
+Pillow==12.1.0
+pluggy==1.6.0
+pyarrow==23.0.1
+Pygments==2.20.0
+pyproj==3.7.2
+PyYAML==6.0.3
+python-dateutil==2.9.0.post0
+pytz==2026.2
+six==1.17.0
+tzdata==2026.3
+xarray==2026.2.0
+
+# Test-only dependency.
+pytest==9.0.2

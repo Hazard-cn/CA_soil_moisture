@@ -19,6 +19,8 @@ title: 当前数据资产、面板与实证入口
 
 本文件是后续数据读取、合并、样本筛选和实证分析的首要入口。项目中的数据资产分为四层：L0 是外部原始栅格或 NetCDF；L1 是裁剪、重投影或对齐后的气象、水分和物候数据；L2 是按格网—年份与物候窗口聚合的中间表；L3 是可以直接进入 Stata、R 或 Python 的面板。数据本体均为本地资产，不进入 Git；Git 只保存代码、结构说明、血缘元数据和不含行级数据的结果说明。
 
+2010—2019 气候与土壤水分胁迫面板的环境变量、不可覆盖运行、并发锁、资源预算和当前 `PARTIAL_SCOPE` 边界见[专门运行说明](../data_build/docs/CLIMATE_STRESS_PANEL_V1.md)。
+
 截至 2026-07-14，后续操作应按研究问题选择数据入口：历史 V1 分析使用外部 V1 或 `data/processed/analysis_main_sample.dta`；共享的 V3 气候与状态变量优先使用 `data_build/data/processed/data_v3_main.parquet`，Stata 使用同目录的 DTA；当前 GGCP10/G185 分析从 `temp/2026-05-18_ggcp10_harvarea_agg_baseline_suite/ggcp10_baseline_suite_analysis_ready.dta` 开始，并从 V3 main 合并 precipitation-defined hot-dry 字段。G185 是规则生成的虚拟样本，不是单独保存的 DTA。
 
 ## 二、面板的共同结构

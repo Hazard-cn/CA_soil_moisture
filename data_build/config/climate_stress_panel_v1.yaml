@@ -1,0 +1,149 @@
+version_id: data-climate-stress-2010-2019-v1
+scope:
+  profile: non2w-dual-severity
+  completion_scope_status: PARTIAL_SCOPE
+  spei_2w_numeric: false
+  spei_2w_output: false
+  compound_mode: dual_independent_severity
+
+manual:
+  path: ${CLIMATE_STRESS_MANUAL_PATH}
+  sha256: 65b6fec7b1895a691c1f858086570a839c0b7e7fdbe0cc5798fe8d9b49a66fff
+
+inputs:
+  v3_main: ${PROJECT_DATA_ROOT}/data_build/data/processed/data_v3_main.parquet
+  v3_phenowindows: ${PROJECT_DATA_ROOT}/data_build/data/processed/data_v3_phenowindows.parquet
+  era5_hourly_pattern: ${ERA5_ROOT}/CN_clipped/ERA{year}_clipped.nc
+  era5_hourly_overrides:
+    1980: ${ERA5_ROOT}/climate_stress_repair_v1/CN_clipped/ERA1980_clipped.nc
+    1985: ${ERA5_ROOT}/climate_stress_repair_v1/CN_clipped/ERA1985_clipped.nc
+    1986: ${ERA5_ROOT}/climate_stress_repair_v1/CN_clipped/ERA1986_clipped.nc
+  era5_daily_validation_pattern: ${DAILY_TEMP_ROOT}/daily_temp_{year}.nc
+  gleam_pattern: ${GLEAM_ROOT}/{year}/{layer}_{year}_GLEAM_v4.3a.nc
+  spei_monthly_pattern: ${CHM_SPEI_ROOT}/CHM_SPEI-{scale}.nc
+  spei_2w: ${CHM_SPEI_ROOT}/CHM_SPEI-2W.nc
+  phenology_pattern: ${PHENOLOGY_ROOT}/maize/CHN_Maize_{stage}_{year}.tif
+
+output:
+  root: ${CLIMATE_STRESS_OUTPUT_ROOT}/data-climate-stress-2010-2019-v1
+  compression: zstd
+  netcdf_complevel: 4
+
+years:
+  target: [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019]
+  historical: [1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990,
+               1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000,
+               2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010]
+  event_context: {start: 1981, end: 2020}
+  daily_validation: [2013, 2014, 2015, 2016, 2017, 2018, 2019]
+
+grid:
+  crs: EPSG:4326
+  nlat: 376
+  nlon: 616
+  north: 53.53
+  west: 73.58
+  step: 0.1
+  footprint: v3_main_union
+  expected_cells: 22180
+  stable_id_formula: lat_idx * 616 + lon_idx + 1
+  v3_coordinate_tolerance_degrees: 1.0e-5
+
+phenology:
+  stages: [V3, HE, MA]
+  source_crs: "+proj=aea +lat_1=15 +lat_2=65 +lat_0=30 +lon_0=95 +datum=WGS84 +units=m +no_defs"
+  minimum_common_pixels: 1
+  valid_doy_min: 1
+  valid_doy_max: 366
+  no_data_values: [0, 65535]
+  aggregate: rounded_mean
+  impute: false
+  windows:
+    full: {start_node: V3, start_offset: -30, end_node: MA, end_offset: 0}
+    v3pre30: {start_node: V3, start_offset: -30, end_node: V3, end_offset: 0}
+    v3pm10: {start_node: V3, start_offset: -10, end_node: V3, end_offset: 10}
+    hepm10: {start_node: HE, start_offset: -10, end_node: HE, end_offset: 10}
+    v3he: {start_node: V3, start_offset: 0, end_node: HE, end_offset: 0}
+    hema: {start_node: HE, start_offset: 0, end_node: MA, end_offset: 0}
+
+temperature:
+  source_variable: t2m
+  source_unit: K
+  output_unit: degC
+  timezone: Asia/Shanghai
+  hours_required_per_day: 24
+  gdd: [{base: 8, upper: 29}, {base: 8, upper: 30},
+        {base: 10, upper: 29}, {base: 10, upper: 30}]
+  edd_thresholds: [29, 30, 32, 34, 35]
+  calendar_window_half_width_days: 7
+  quantile_method: linear
+  hot_quantile: 0.90
+  minimum_history_fraction: 0.90
+  heatwave_min_days: 3
+  strict_comparison: true
+
+spei:
+  monthly_scales: [1, 3]
+  thresholds: [-1.0, -1.5]
+  primary_min_units: 1
+  strict_min_units: 3
+  dynamic_interpolation: nearest
+  manual_interpolation: bilinear_renormalized
+  minimum_valid_neighbors: 2
+  product_standardization: native_unknown_fit_period
+  two_week_sampling_days: 7
+  two_week_timestamp_semantics: unresolved
+  two_week_label: run
+  legacy_alignment: nearest
+
+gleam:
+  layers:
+    SMrz: primary
+    SMs: supplementary
+  interpolation: bilinear_renormalized
+  minimum_valid_neighbors: 2
+  pentads_per_year: 73
+  remove_feb29_from_pentad: true
+  daily_p10_calendar_half_width_days: 2
+  percentiles: [10, 20, 40]
+  daily_event_min_days: 5
+  daily_gap_main: 0
+  daily_gap_sensitivity: 2
+  flash_start_above: 40
+  flash_end_below: 20
+  flash_min_speed_per_pentad: 5
+  flash_max_onset_pentads: 5
+  flash_primary_min_pentads: 3
+  flash_strict_min_pentads: 4
+  flash_primary_recovery_confirm: 1
+  flash_strict_recovery_confirm: 2
+
+compound:
+  daily_hot_sm_min_days: 5
+  sm_tail_primary: 20
+  sm_tail_strict: 10
+  hot_pentad_mean_temperature_percentile: 90
+  hot_flash_primary: any_hot_pentad
+  hot_flash_strict: majority_hot_pentads
+
+quality:
+  minimum_window_coverage: 0.90
+  coordinate_tolerance: 1.0e-8
+  numeric_tolerance: 1.0e-6
+  require_utc_daily_validation: true
+  utc_daily_reproduction_tolerance_c: 1.0e-4
+  require_historical_occurrence_validation: true
+  historical_occurrence_tolerance: null
+  expected_wide_rows: 221800
+  expected_long_rows: 1330800
+  random_seed: 42
+  pilot_grid_limit: 100
+  pilot_years: [2010, 2016, 2019]
+
+runtime:
+  gleam_cell_block_size: 128
+  validation_cell_block_size: 128
+  parquet_row_group_size: 262144
+  storage_dtype: float64
+  pilot_peak_rss_budget_bytes: 4294967296
+  full_peak_rss_budget_bytes: 17179869184

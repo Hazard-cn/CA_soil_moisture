@@ -1,6 +1,7 @@
 # Local environments and agent/tool configuration
 .venv/
 .venv-ml/
+.venv-climate/
 .AGENT/
 .agents/
 .claude/
