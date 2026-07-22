@@ -5,10 +5,10 @@ The three interfaces are intentionally separate:
 * ``legacy_v3_exact`` and ``dynamic_ext`` use nearest-neighbour values.
 * ``manual`` SPEI-1/3 uses bilinear interpolation renormalized over at least
   two valid, positive-weight source neighbours.
-* SPEI-2W contains a development-candidate split contract: each label ends a
-  trailing 14-day accumulation, while run detection maps that release to the
-  non-overlapping forward seven-day state beginning on the label date.  The
-  candidate remains disabled until the endpoint decision is confirmed.
+* SPEI-2W uses the frozen endpoint-A split contract: each label ends a trailing
+  14-day accumulation ``[label-13, label]``, while run detection maps that
+  release to the non-overlapping forward seven-day state
+  ``[label, label+6]``.
 
 Three-dimensional NetCDF variables are read one time index at a time.  No
 function in this module materializes an entire source cube.
@@ -2392,7 +2392,7 @@ class TwoWeekAudit:
         support_status = (
             "confirmed"
             if self.endpoint_decision_status == "CONFIRMED"
-            else "development_candidate"
+            else "partial_scope_disabled"
         )
         return {
             "status": self.status,

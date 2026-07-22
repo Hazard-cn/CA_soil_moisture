@@ -28,7 +28,7 @@ title: 2026 年版本地图
 | data-v3-main | 2026-04-23 | reference | current_data_component | Exported the analysis main view including yield fields | Primary V3 module input | three-source-confirmed |
 | data-v3-no-yield | 2026-04-23 | reference | current_data_component | Exported the yield-missing row partition while retaining the full schema | Yield-missing row partition for non-outcome data reuse | three-source-confirmed |
 | data-v3-phenowindows | 2026-04-23 | reference | current_data_component | Preserved the full phenology-window table before export filtering | Local source for the V3 main and no-yield exports | three-source-confirmed |
-| data-climate-stress-2010-2019-v1 | 2026-07-22 | exploratory | candidate_data_build_blocked_pilot | Registered the recoverable ERA5, CHM SPEI and GLEAM climate-stress panel build as a candidate contract without treating an unrun pilot or full panel as a completed version | Candidate build contract only; blocked before the real pilot and not a current shared data version | single-source-inferred |
+| data-climate-stress-2010-2019-v1 | 2026-07-22 | exploratory | candidate_data_build_planned_not_run | Confirmed the full SPEI-2W endpoint-A build contract and complete planned input lineage without treating an unrun pilot or full panel as a completed version | Confirmed full build contract only; pilot is planned_not_run and full execution awaits a successful real pilot; not a current shared data version | single-source-inferred |
 
 ## 报告框架
 

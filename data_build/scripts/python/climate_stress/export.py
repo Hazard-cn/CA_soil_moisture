@@ -509,7 +509,7 @@ def generate_variable_metadata(
             support_status = (
                 "confirmed"
                 if scope_status == "FULL_SCOPE"
-                else "development_candidate"
+                else "partial_scope_disabled"
             )
             details["time_window"] = (
                 f"{support_status}: trailing accumulation "

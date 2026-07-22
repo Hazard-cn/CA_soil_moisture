@@ -1,9 +1,9 @@
 version_id: data-climate-stress-2010-2019-v1
 scope:
-  profile: non2w-dual-severity
-  completion_scope_status: PARTIAL_SCOPE
-  spei_2w_numeric: false
-  spei_2w_output: false
+  profile: full-spei2w-dual-severity
+  completion_scope_status: FULL_SCOPE
+  spei_2w_numeric: true
+  spei_2w_output: true
   compound_mode: dual_independent_severity
 
 manual:
@@ -98,7 +98,7 @@ spei:
   two_week_accumulation_timestamp_position: end
   two_week_state_timestamp_position: start
   two_week_timestamp_semantics: trailing_14_day_accumulation_end_with_forward_7_day_state
-  two_week_endpoint_decision_status: PENDING_USER_DECISION
+  two_week_endpoint_decision_status: CONFIRMED
   two_week_primary_threshold: -1.0
   two_week_primary_min_units: 1
   two_week_strict_threshold: -1.5

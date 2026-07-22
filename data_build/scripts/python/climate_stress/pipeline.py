@@ -688,7 +688,7 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
     endpoint_status = str(spei_config["two_week_endpoint_decision_status"])
     if two_week_enabled and endpoint_status != "CONFIRMED":
         raise StageValidationError(
-            "SPEI-2W endpoint decision is pending; FULL_SCOPE numerics are disabled"
+            "SPEI-2W endpoint is not confirmed; FULL_SCOPE numerics are disabled"
         )
     crosswalk = pd.read_parquet(
         _stage_file(request.context, "grid", "crosswalk.parquet")
@@ -3971,7 +3971,7 @@ def _handle_export(request: StageRequest) -> StageOutcome:
                 "CHM native monthly SPEI plus confirmed 2W trailing-14-day "
                 "releases mapped to forward 7-day event states"
                 if full_scope
-                else "CHM native monthly SPEI; development-candidate 2W numerics excluded"
+                else "CHM native monthly SPEI; partial-scope 2W numerics excluded"
             ),
             "soil_moisture": "GLEAM 4.3a daily and fixed calendar-pentad metrics",
             "events": "complete-sequence detection with event-window audit bridges",

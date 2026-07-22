@@ -1416,7 +1416,7 @@ drought-only Model 8；mediator和yield两方程；baseline-local、pooled-state
 |---|---|---|---|
 | `regional-threshold-sr-v1` | 2026-07-14 | `reference` | Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate |
 | `compound-event-intensity-duration-v1` | 2026-07-15 | `reference` | Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major |
-| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Registered the recoverable ERA5, CHM SPEI and GLEAM climate-stress panel build as a candidate contract without treating an unrun pilot or full panel as a completed version |
+| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Confirmed the full SPEI-2W endpoint-A build contract and complete planned input lineage without treating an unrun pilot or full panel as a completed version |
 
 ### 方法变化
 
@@ -2882,19 +2882,23 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 |---|---|
 | 时间与状态 | 2026-07-22；`exploratory`；`logical_data_version` |
 | 父版/取代关系 | parent=`data-v3-main`；supersedes=`none` |
-| 当前用途 | Candidate build contract only; blocked before the real pilot and not a current shared data version；truth role=`candidate_data_build_blocked_pilot` |
+| 当前用途 | Confirmed full build contract only; pilot is planned_not_run and full execution awaits a successful real pilot; not a current shared data version；truth role=`candidate_data_build_planned_not_run` |
 | 证据 | `single-source-inferred`；关联脱敏对话 1 个 |
 
 ### 数据变化
 
-计划以V3主视图的22180个坐标格点为crosswalk，扩展至2010-2019平衡grid-year及六物候窗口；pilot与full面板、NetCDF、DTA、审计层和manifest均尚未生成
+计划以V3主视图的22180个坐标格点为crosswalk，扩展至2010-2019平衡grid-year及六物候窗口；正式配置已启用SPEI-2W，V3 main/phenowindows、ERA修复、daily validation、GLEAM右边界、CHM monthly/2W与逐年物候输入均已显式登记，但pilot与full面板、NetCDF、DTA、审计层和manifest均尚未生成
 
 关联 artifact：
 
 | Artifact | 角色 | 状态 | 规模 | 路径或逻辑 URI |
 |---|---|---|---|---|
-| `climate-stress-era5-repair-required-v1` | raw-input | missing | 未记录 | `external://era5-cn-clipped-repair/ERA-{1980,1985,1986}-clipped.nc` |
+| `climate-stress-era5-repair-required-v1` | raw-input | present | 未记录 | `external://era5-cn-clipped-repair/ERA-{1980,1985,1986}-clipped.nc` |
 | `climate-stress-gleam43a-2020-sm-bundle` | raw-input | present | 366×2 | `external://gleam43a/v4.3a/daily/2020/{SMrz,SMs}_2020_GLEAM_v4.3a.nc` |
+| `climate-stress-chm-spei-monthly-bundle` | raw-input | present | 744×12 | `external://chm-drought-v1/SPEI/CHM_SPEI-{1..12}.nc` |
+| `climate-stress-chm-spei-2w` | raw-input | present | 3235×1 | `external://chm-drought-v1/SPEI/CHM_SPEI-2W.nc` |
+| `climate-stress-daily-temperature-validation-2013-2019` | raw-input | present | 2556×3 | `external://daily-temp-cn/daily_temp_{2013..2019}.nc` |
+| `climate-stress-maize-phenology-2010-2019` | raw-input | present | 未记录 | `external://china-crop-phenology-1km/maize/CHN_Maize_{V3,HE,MA}_{2010..2019}.tif` |
 | `data-climate-stress-panel-v1-pilot-output` | data-build-snapshot | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{pilot-run-id}/panel-bundle` |
 | `data-climate-stress-panel-v1-full-output` | data-build-snapshot | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{full-run-id}/panel-bundle` |
 | `data-climate-stress-panel-v1-pilot-manifest` | result-manifest | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{pilot-run-id}/manifest.json` |
@@ -2902,7 +2906,7 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 
 ### 方法变化
 
-ERA5温度与GLEAM百分位历史期固定为1981-2010；CHM SPEI沿用原生标准化且拟合参考期unknown；SPEI-2W主版为K=-1至少1个发布状态、严格版为K=-1.5连续至少3个7日发布状态，14日累积以标签日为终点，但forward state日界endpoint标记PENDING_USER_DECISION；复合事件仅分别输出heat excess和soil-moisture deficit severity，不合成混合量纲标量
+ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件轴按形状相同且rtol=0、atol=1e-8校验，每文件目标子网格仍严格1e-8；CHM SPEI沿用原生标准化且拟合参考期unknown；SPEI-2W端点A确认为14日累积闭区间[label-13,label]和7日状态闭区间[label,label+6]，主版为K=-1至少1个发布状态、严格版为K=-1.5连续至少3个7日发布状态；复合事件仅分别输出heat excess和soil-moisture deficit severity，不合成混合量纲标量
 
 #### `method-data-climate-stress-panel-v1`
 
@@ -2911,19 +2915,19 @@ ERA5温度与GLEAM百分位历史期固定为1981-2010；CHM SPEI沿用原生标
 - Controls / FE：No regression controls; window metrics require at least 90 percent valid coverage and missing observations are not encoded as zero；None; this is a data-construction method rather than an estimated fixed-effect model。
 - Inference：ERA5 temperature and GLEAM empirical percentiles use 1981-2010; CHM uses its native standardized product with fit/reference period unknown; Type 7 quantiles, strict threshold comparisons and deterministic event rules are used；bootstrap=none；reps=0；seed=42。
 - 代码入口：`repo://data_build/scripts/python/build_climate_stress_panel.py`。
-- 解释边界：Candidate method only: SPEI-2W trailing 14-day accumulation support ends on the release label; the planned forward 7-day state interval has endpoint=PENDING_USER_DECISION; main runs use K=-1 for at least one release and strict runs use K=-1.5 for at least three consecutive 7-day release states, with missing slots or NaN breaking continuity; no real pilot/full output, empirical estimate or completion claim exists。
+- 解释边界：Confirmed method contract: SPEI-2W endpoint A maps each label to trailing accumulation [label-13,label] and forward event state [label,label+6]; main runs use K=-1 for at least one release and strict runs use K=-1.5 for at least three consecutive 7-day release states, with missing slots or NaN breaking continuity; no real pilot/full output, empirical estimate or completion claim exists。
 
 ### 结果呈现变化
 
-仅登记候选配置、方法和缺失运行产物；没有真实100格点pilot、full输出、结果manifest或可发布数值，不得标记current、verified或完整v1通过
+仅登记已确认的FULL_SCOPE配置、方法、已核验输入和planned lineage；没有真实100格点pilot、full输出、结果manifest或可发布数值，不得标记current、verified或完整v1通过
 
 关联运行与结果载体：
 
 | Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
 |---|---|---|---|---|---|---|---|
-| `run-data-climate-stress-panel-v1-pilot-pending-20260722` | `data-v3-expanded-main\|climate-stress-era5-repair-required-v1\|climate-stress-gleam43a-2020-sm-bundle` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{pilot-run-id}/manifest.json` | `未公开` | blocked_upstream_snapshot |
+| `run-data-climate-stress-panel-v1-pilot-planned-20260722` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | planned_not_run |
 
 ### 相对前版与证据边界
 
-- 综合变化：Registered the recoverable ERA5, CHM SPEI and GLEAM climate-stress panel build as a candidate contract without treating an unrun pilot or full panel as a completed version
-- 证据限制：GLEAM 4.3a 2020 provenance is closed; ERA5 1980 boundary and 1985/1986 baseline repair requests are queued in CDS; pilot and full runs have not started; SPEI-2W forward-state endpoint remains PENDING_USER_DECISION; no physical output or code/config hash is asserted
+- 综合变化：Confirmed the full SPEI-2W endpoint-A build contract and complete planned input lineage without treating an unrun pilot or full panel as a completed version
+- 证据限制：Decision_id=decision-climate-stress-confirmations-20260722 records endpoint A and the bounded input authorization; all formal YAML input families now have explicit artifact IDs; pilot and full runs have not started; no physical output or run manifest is asserted

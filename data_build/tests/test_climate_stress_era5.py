@@ -183,6 +183,40 @@ def test_utc_plus_8_uses_previous_year_boundary_hours(tmp_path: Path) -> None:
     assert metadata["timezone_offset_hours"] == 8
 
 
+def test_utc_boundary_accepts_mixed_repair_and_legacy_axes_within_tolerance(
+    tmp_path: Path,
+) -> None:
+    repair = tmp_path / "repair" / "ERA2019.nc"
+    legacy = tmp_path / "legacy" / "ERA2020.nc"
+    repair.parent.mkdir()
+    legacy.parent.mkdir()
+    _write_era(repair, 2019, latitude_offset=5e-9)
+    _write_era(legacy, 2020)
+    cells = pd.DataFrame(
+        {
+            "era01_cell_id": [1],
+            "lat_idx": [0],
+            "lon_idx": [0],
+            "latitude": [53.53],
+            "longitude": [73.58],
+        }
+    )
+
+    dates, arrays, _metadata = extract_daily_temperature(
+        str(tmp_path / "legacy" / "ERA{year}.nc"),
+        2020,
+        cells,
+        file_overrides={2019: repair},
+        utc_offset_hours=8,
+        gdd_pairs=((8, 29),),
+        edd_thresholds=(10,),
+        coordinate_tolerance=1e-8,
+    )
+
+    assert len(dates) == 366
+    assert arrays["era5u8_hour_count"][0, 0] == 24
+
+
 def test_wrong_year_previous_file_is_rejected_before_daily_aggregation(
     tmp_path: Path,
 ) -> None:

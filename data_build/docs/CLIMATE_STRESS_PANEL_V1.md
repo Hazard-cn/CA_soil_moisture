@@ -2,7 +2,7 @@
 
 ## 当前范围状态
 
-当前可执行配置的 `scope_profile` 为 `non2w-dual-severity`，运行、阶段标记和质量摘要均记录 `completion_scope_status=PARTIAL_SCOPE`。该状态明确表示：SPEI-2W 数值计算与输出契约均为 `false`；复合事件按已确认口径保留热超额与土壤水亏缺两套独立 severity，不生成混合量纲标量。SPEI-2W 事件状态端点仍待确认，只有端点决定、正式配置、实现证据和回归验证同步闭合后，才可另建 run/version 并声明完整 v1；当前运行不得标记为完整 v1。
+当前正式配置的 `scope_profile` 为 `full-spei2w-dual-severity`，运行、阶段标记和质量摘要必须记录 `completion_scope_status=FULL_SCOPE`，SPEI-2W 数值计算与输出契约均为 `true`。用户于 2026-07-22 确认端点A：标签值的14日累积支持为闭区间 `[label-13,label]`，事件状态为闭区间 `[label,label+6]`。复合事件继续保留热超额与土壤水亏缺两套独立 severity，不生成混合量纲标量。配置和端点合同已经闭合不等于真实运行已经完成；正式100格点pilot及full仍未启动，当前不得声称完整v1数据产物已经生成。
 
 ## 环境与路径
 
@@ -35,7 +35,7 @@
 & .\data_build\scripts\powershell\run_climate_stress_panel.ps1 -Stage assets -RunId preflight-001 -PilotCells 100 -HashMode pilot
 ```
 
-pilot、full 和断点续跑示例：
+以下pilot、full和断点续跑命令仅是后续运行示例；ERA 1980/1985/1986修复输入虽已闭合，但本轮授权不包括启动pilot，不得在本轮执行：
 
 ```powershell
 # 冻结 pilot：100 cells，配置中的 pilot years
@@ -56,8 +56,8 @@ pilot、full 和断点续跑示例：
 
 ## 当前输入门禁
 
-截至 2026-07-22，GLEAM 2020 的 SMrz/SMs 输入已闭合；ERA 1985、1986历史期修复及1980 UTC+8首日边界所需的三项 CDS 获取任务已排队，但下载、逐文件校验和资产清单证据尚未全部完成。SPEI-2W 候选口径明确区分“标签结束的后向14日累积支持”与“标签起始的前向7日事件状态”，其中事件状态是否采用 `[label,label+6]` 仍为 `PENDING_USER_DECISION`。assets阶段把该项记为`spei_2w_only`范围限制，继续非2W的`PARTIAL_SCOPE`流水线；正式100格点pilot和full均尚未启动。本入口不会自行触发下载。
+截至 2026-07-22，GLEAM 2020 的 SMrz/SMs 输入、ERA 1980/1985/1986修复输入和SPEI-2W端点A均已闭合；端点不再构成`spei_2w_only`范围限制。repair与legacy ERA文件的坐标轴仅存在浮点表示差时，跨文件一致性按形状相同且`rtol=0, atol=quality.coordinate_tolerance=1e-8`判断；每个文件到目标子网格仍逐坐标执行严格`1e-8`验证。正式100格点pilot和full均尚未启动，本入口不会自行触发下载或运行。
 
 ## 2026-07-22 增量确认状态
 
-用户已确认复合事件维持两套独立severity、不得生成混合量纲标量，并确认pilot/full进程峰值预算分别为4 GiB与16 GiB。开发候选代码已覆盖SPEI-2W的双时间区间、7日缺档、主版K=-1至少1个release、严格版K=-1.5至少3个连续release、事件/bridge审计和FULL_SCOPE输出门禁；这些候选测试不构成端点确认，也不构成正式pilot证据。正式YAML继续保持`PENDING_USER_DECISION`、`PARTIAL_SCOPE/non2w-dual-severity`与2W数值/输出关闭。
+用户已确认复合事件维持两套独立severity、不得生成混合量纲标量，并确认pilot/full进程峰值预算分别为4 GiB与16 GiB。主任务决策`decision-climate-stress-confirmations-20260722`确认：14日累积区间为`[label-13,label]`，7日状态区间为`[label,label+6]`。正式YAML已原子切换为`CONFIRMED`、`FULL_SCOPE/full-spei2w-dual-severity`与2W数值/输出开启；实现继续覆盖7日缺档、主版K=-1至少1个release、严格版K=-1.5至少3个连续release、事件/bridge审计和FULL_SCOPE输出门禁。`PARTIAL_SCOPE/PENDING_USER_DECISION`仅保留为fail-closed反例合同，不是正式运行默认值。以上配置与测试证据均不构成正式pilot完成证据。

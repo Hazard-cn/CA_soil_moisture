@@ -380,9 +380,23 @@ def extract_daily_temperature(
             longitude = np.asarray(
                 dataset.variables["longitude"][:], dtype=np.float64
             )
-            if not np.array_equal(latitude, reference_latitude) or not np.array_equal(
-                longitude, reference_longitude
-            ):
+            axes_match = (
+                latitude.shape == reference_latitude.shape
+                and longitude.shape == reference_longitude.shape
+                and np.allclose(
+                    latitude,
+                    reference_latitude,
+                    rtol=0.0,
+                    atol=coordinate_tolerance,
+                )
+                and np.allclose(
+                    longitude,
+                    reference_longitude,
+                    rtol=0.0,
+                    atol=coordinate_tolerance,
+                )
+            )
+            if not axes_match:
                 raise ValueError(
                     "ERA5 spatial axes differ across adjacent/repair annual files"
                 )

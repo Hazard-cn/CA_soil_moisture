@@ -680,7 +680,7 @@ def test_two_week_pending_endpoint_skips_numeric_and_writes_audit(tmp_path: Path
     assert audit.status == SPEI_2W_PENDING_STATUS
     assert audit.endpoint_decision_status == "PENDING_USER_DECISION"
     assert audit.as_dict()["event_state_support"].startswith(
-        "development_candidate:"
+        "partial_scope_disabled:"
     )
     path = write_two_week_audit(tmp_path / "spei_2w_audit.json", audit)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -876,6 +876,78 @@ def test_two_week_source_censor_uses_only_immediately_adjacent_state(
     assert not bridges.empty
     assert set(bridges["source_left_censored"].astype(bool)) == {expected_left}
     assert set(bridges["source_right_censored"].astype(bool)) == {expected_right}
+
+
+def test_two_week_cross_year_event_bridges_share_id_and_conserve_severity() -> None:
+    panel_rows = [
+        _panel_row(year=2018, start_doy=1, end_doy=365),
+        _panel_row(year=2019, start_doy=1, end_doy=365),
+    ]
+    for row in panel_rows:
+        for window in WINDOW_NAMES:
+            if window != "full":
+                row[f"win_{window}_start"] = np.nan
+                row[f"win_{window}_end"] = np.nan
+
+    long, events, bridges = aggregate_two_week_spei_event_six_windows(
+        pd.DataFrame(panel_rows),
+        [
+            date(2018, 12, 22),
+            date(2018, 12, 29),
+            date(2019, 1, 5),
+            date(2019, 1, 12),
+        ],
+        np.asarray([-1.0, -1.7, -1.2, np.nan], dtype=float)[:, None],
+        cell_index_column="spei_cell_index",
+        minimum_coverage=0.0,
+    )
+
+    assert len(events) == 1
+    assert events["event_id"].is_unique
+    event = events.iloc[0]
+    assert event["variant"] == "k10_main"
+    assert event["threshold"] == pytest.approx(-1.0)
+    # Exactly-threshold support is inactive, and the following NaN ends the run.
+    assert event["first_release_date"] == date(2018, 12, 29)
+    assert event["last_release_date"] == date(2019, 1, 5)
+    assert event["first_accumulation_start"] == date(2018, 12, 16)
+    assert event["last_accumulation_end"] == date(2019, 1, 5)
+    assert event["start_date"] == date(2018, 12, 29)
+    assert event["end_date"] == date(2019, 1, 11)
+    assert event["release_count"] == 2
+    assert event["duration_days"] == 14
+    assert event["severity_spei_releases"] == pytest.approx(0.9)
+
+    annual_bridges = bridges.sort_values("year").reset_index(drop=True)
+    assert annual_bridges["year"].tolist() == [2018, 2019]
+    assert annual_bridges["window"].tolist() == ["full", "full"]
+    assert annual_bridges["event_id"].tolist() == [event["event_id"]] * 2
+    assert annual_bridges["event_id"].nunique() == 1
+    assert annual_bridges["window_duration_days"].tolist() == [3, 11]
+    np.testing.assert_allclose(
+        annual_bridges["window_duration_releases_equiv"],
+        [3 / 7, 11 / 7],
+    )
+
+    first_release_deficit = -1.0 - (-1.7)
+    second_release_deficit = -1.0 - (-1.2)
+    expected_bridge_severity = np.asarray(
+        [
+            first_release_deficit * 3 / 7,
+            first_release_deficit * 4 / 7 + second_release_deficit,
+        ]
+    )
+    np.testing.assert_allclose(
+        annual_bridges["severity_spei_releases"], expected_bridge_severity
+    )
+    assert annual_bridges["severity_spei_releases"].sum() == pytest.approx(
+        event["severity_spei_releases"]
+    )
+    np.testing.assert_allclose(
+        long.loc[long["window"].eq("full")]
+        .sort_values("year")["chm_spei_2w_k10_main_severity_spei_releases"],
+        expected_bridge_severity,
+    )
 
 
 def test_two_week_main_strict_gap_and_zero_event_contracts() -> None:

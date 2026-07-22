@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import netCDF4 as nc
@@ -23,6 +24,7 @@ from climate_stress.config import (  # noqa: E402
     PipelineConfig,
     load_config,
 )
+from climate_stress.core import spei_2w_interval_contracts  # noqa: E402
 from climate_stress.inventory import (  # noqa: E402
     AssetSpec,
     InventoryResult,
@@ -138,8 +140,26 @@ def test_formal_config_expands_all_environment_paths_and_hashes_resolution(
     first = load_config(FORMAL_CONFIG)
     assert first.template_sha256 and first.template_sha256 != first.sha256
     assert all(Path(value).is_absolute() for value in first.resolved_paths().values())
-    assert first.scope_profile == "non2w-dual-severity"
-    assert first.completion_scope_status == "PARTIAL_SCOPE"
+    assert first.scope_profile == "full-spei2w-dual-severity"
+    assert first.completion_scope_status == "FULL_SCOPE"
+    assert first.data["scope"]["spei_2w_numeric"] is True
+    assert first.data["scope"]["spei_2w_output"] is True
+    assert first.data["spei"]["two_week_endpoint_decision_status"] == "CONFIRMED"
+    endpoint_a = spei_2w_interval_contracts(
+        [date(2019, 7, 15)],
+        accumulation_days=first.data["spei"]["two_week_accumulation_days"],
+        state_days=first.data["spei"]["two_week_state_days"],
+        accumulation_timestamp_position=first.data["spei"][
+            "two_week_accumulation_timestamp_position"
+        ],
+        state_timestamp_position=first.data["spei"][
+            "two_week_state_timestamp_position"
+        ],
+    )[0]
+    assert endpoint_a.accumulation_start == date(2019, 7, 2)
+    assert endpoint_a.accumulation_end_exclusive == date(2019, 7, 16)
+    assert endpoint_a.state_start == date(2019, 7, 15)
+    assert endpoint_a.state_end_exclusive == date(2019, 7, 22)
 
     set_formal_config_environment(
         monkeypatch,
@@ -284,7 +304,12 @@ def test_two_week_endpoint_and_scope_combinations_fail_closed(tmp_path: Path) ->
     assert loaded.completion_scope_status == "FULL_SCOPE"
 
 
-def _write_inventory_era(path: Path, axis_year: int) -> None:
+def _write_inventory_era(
+    path: Path,
+    axis_year: int,
+    *,
+    latitude_offset: float = 0.0,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     start = np.datetime64(f"{int(axis_year):04d}-01-01T00", "h")
     end = np.datetime64(f"{int(axis_year) + 1:04d}-01-01T00", "h")
@@ -300,7 +325,7 @@ def _write_inventory_era(path: Path, axis_year: int) -> None:
         time[:] = ((hours - epoch) / np.timedelta64(1, "h")).astype(np.float64)
         latitude = dataset.createVariable("latitude", "f8", ("latitude",))
         longitude = dataset.createVariable("longitude", "f8", ("longitude",))
-        latitude[:] = [53.53, 53.43]
+        latitude[:] = np.asarray([53.53, 53.43]) + float(latitude_offset)
         longitude[:] = [73.58, 73.68]
         dataset.createVariable(
             "t2m", "f4", ("valid_time", "latitude", "longitude")
@@ -554,7 +579,41 @@ def test_inventory_enumerates_frozen_asset_universe(tmp_path: Path) -> None:
     assert two_week.timestamp_semantics == (
         "trailing_14_day_accumulation_end_with_forward_7_day_state"
     )
-    assert "development-candidate" in two_week.role
+    assert "partial-scope" in two_week.role
+
+
+def test_inventory_accepts_mixed_repair_and_legacy_axes_within_tolerance(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "legacy" / "ERA1984.nc"
+    repair = tmp_path / "repair" / "ERA1985.nc"
+    _write_inventory_era(legacy, 1984)
+    _write_inventory_era(repair, 1985, latitude_offset=5e-9)
+    specs = [
+        AssetSpec(
+            asset_id="era5.hourly.1984",
+            family="era5_hourly",
+            path=legacy,
+            role="legacy annual input",
+            year=1984,
+            variable="t2m",
+        ),
+        AssetSpec(
+            asset_id="era5.hourly.1985",
+            family="era5_hourly",
+            path=repair,
+            role="repair annual input",
+            year=1985,
+            variable="t2m",
+        ),
+    ]
+
+    checks, _axes = _validate_netcdf_axes(make_config(tmp_path), specs, mode="all")
+    axes_check = next(
+        item for item in checks if item["check_id"] == "netcdf.axes_variables"
+    )
+    assert axes_check["status"] == "pass"
+    assert axes_check["evidence"]["errors"] == []
 
 
 @pytest.mark.parametrize("mode", ["representative", "all"])
@@ -660,7 +719,7 @@ def test_inventory_marks_pending_2w_scope_limited_without_executing_it(
     assert check["evidence"]["endpoint_decision_status"] == (
         "PENDING_USER_DECISION"
     )
-    assert check["evidence"]["decision_basis"] == "development_candidate_only"
+    assert check["evidence"]["decision_basis"] == "partial_scope_counterexample"
     assert check["evidence"]["blocking_scope"] == "spei_2w_only"
     assert check["evidence"]["numeric_executed_by_assets_stage"] is False
     assert check["evidence"]["numeric_enabled_for_spei_stage"] is False

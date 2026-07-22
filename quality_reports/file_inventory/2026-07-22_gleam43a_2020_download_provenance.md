@@ -4,7 +4,7 @@
 
 - 状态：`SUCCESS`
 - 范围：GLEAM 4.3a 日度 `SMrz` 与 `SMs`，公历年 2020
-- 授权记录：`decision-climate-stress-input-authorization-20260722`
+- 授权记录：`decision-climate-stress-confirmations-20260722`
 - 开始时间：`2026-07-22T13:18:01+08:00`
 - 首条传输日志时间：`2026-07-22T13:18:06+08:00`
 - 完成时间：`2026-07-22T13:22:37+08:00`

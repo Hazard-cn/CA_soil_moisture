@@ -199,6 +199,128 @@ class VersionLineageTests(unittest.TestCase):
     def test_minimal_registry_graph_is_valid(self) -> None:
         self.assertEqual(vl.validate_registries(self.minimal_registries()), [])
 
+    def test_planned_not_run_forbids_execution_and_result_evidence(self) -> None:
+        empty_fields = (
+            "result_manifest",
+            "public_result",
+            "code_git_sha",
+            "run_started_at",
+            "run_completed_at",
+        )
+        def planned_registries() -> dict[str, vl.Registry]:
+            registries = self.minimal_registries()
+            version = next(
+                row
+                for row in registries["version_registry.csv"].rows
+                if row["canonical_id"] == "g185-current"
+            )
+            version["status"] = "exploratory"
+            version["current_truth_role"] = "planned-test-version"
+            return registries
+
+        registries = planned_registries()
+        planned = registries["analysis_runs.csv"].rows[0]
+        planned["reproducibility_status"] = "planned_not_run"
+        for field in empty_fields:
+            planned[field] = ""
+        self.assertEqual(vl.validate_registries(registries), [])
+
+        invalid_values = {
+            "result_manifest": "repo://quality_reports/test-results.json",
+            "public_result": "repo://docs/results/test/report.md",
+            "code_git_sha": "a" * 40,
+            "run_started_at": "2026-07-22T00:00:00+08:00",
+            "run_completed_at": "2026-07-22T01:00:00+08:00",
+        }
+        for field, value in invalid_values.items():
+            with self.subTest(field=field):
+                invalid = planned_registries()
+                candidate = invalid["analysis_runs.csv"].rows[0]
+                candidate["reproducibility_status"] = "planned_not_run"
+                for empty_field in empty_fields:
+                    candidate[empty_field] = ""
+                candidate[field] = value
+                errors = vl.validate_registries(invalid)
+                self.assertTrue(
+                    any(
+                        f"planned_not_run must leave {field} empty" in error
+                        for error in errors
+                    )
+                )
+
+    def test_climate_stress_planned_run_freezes_inputs_and_planned_edges(self) -> None:
+        registries = vl.load_all()
+        run = next(
+            row
+            for row in registries["analysis_runs.csv"].rows
+            if row["analysis_run_id"]
+            == "run-data-climate-stress-panel-v1-pilot-planned-20260722"
+        )
+        expected_inputs = {
+            "data-v3-expanded-main",
+            "data-v3-expanded-phenowindows",
+            "climate-stress-era5-repair-required-v1",
+            "climate-stress-gleam43a-2020-sm-bundle",
+            "climate-stress-chm-spei-monthly-bundle",
+            "climate-stress-chm-spei-2w",
+            "climate-stress-daily-temperature-validation-2013-2019",
+            "climate-stress-maize-phenology-2010-2019",
+        }
+        self.assertEqual(set(vl.split_ids(run["input_artifact_ids"])), expected_inputs)
+        self.assertEqual(run["reproducibility_status"], "planned_not_run")
+        for field in (
+            "result_manifest",
+            "public_result",
+            "code_git_sha",
+            "run_started_at",
+            "run_completed_at",
+        ):
+            self.assertEqual(run[field], "")
+
+        artifacts = {
+            row["artifact_id"]: row
+            for row in registries["artifact_registry.csv"].rows
+        }
+        for artifact_id in expected_inputs:
+            self.assertIn(artifact_id, artifacts)
+            self.assertEqual(artifacts[artifact_id]["status"], "present")
+
+        planned_pairs = {
+            (row["input_artifact_id"], row["output_artifact_id"])
+            for row in registries["data_lineage.csv"].rows
+            if row["verification_status"] == "single-source-inferred"
+        }
+        direct_planned_inputs = expected_inputs.difference(
+            {
+                "climate-stress-era5-repair-required-v1",
+                "climate-stress-gleam43a-2020-sm-bundle",
+                "data-v3-expanded-main",
+            }
+        )
+        for artifact_id in direct_planned_inputs:
+            self.assertIn(
+                (artifact_id, "data-climate-stress-panel-v1-pilot-output"),
+                planned_pairs,
+            )
+            self.assertIn(
+                (artifact_id, "data-climate-stress-panel-v1-full-output"),
+                planned_pairs,
+            )
+        self.assertIn(
+            (
+                "data-climate-stress-panel-v1-pilot-output",
+                "data-climate-stress-panel-v1-pilot-manifest",
+            ),
+            planned_pairs,
+        )
+        self.assertIn(
+            (
+                "data-climate-stress-panel-v1-full-output",
+                "data-climate-stress-panel-v1-full-manifest",
+            ),
+            planned_pairs,
+        )
+
     def test_post_git_user_decision_requires_sanitized_scope_contract(self) -> None:
         registries = self.minimal_registries()
         decision = row(

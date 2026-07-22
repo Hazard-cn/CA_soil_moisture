@@ -68,10 +68,10 @@ def _partial_2w_evidence() -> dict[str, object]:
         "event_rows": 0,
         "bridge_rows": 0,
         "accumulation_support": (
-            "development_candidate: [label-13 days, label] inclusive"
+            "partial_scope_disabled: [label-13 days, label] inclusive"
         ),
         "event_state_support": (
-            "development_candidate: [label, label+6 days] inclusive"
+            "partial_scope_disabled: [label, label+6 days] inclusive"
         ),
     }
 

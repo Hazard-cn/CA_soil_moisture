@@ -459,11 +459,11 @@ def spei_2w_interval_contracts(
 ) -> tuple[Spei2WIntervalContract, ...]:
     """Build the explicit CHM 2W accumulation/state mapping.
 
-    This is a development-candidate mapping only: an inclusive trailing
-    14-day accumulation ending on the label date and a forward seven-day state
-    beginning on that label date.  It must remain disabled until the endpoint
-    decision is confirmed; confirmation atomically updates scope, config, and
-    audit evidence.  Observed releases follow a ``state_days`` cadence.
+    Frozen v1 uses an inclusive trailing 14-day accumulation ending on the
+    label date and a forward seven-day state beginning on that label date.
+    The formal endpoint-A contract is therefore ``[label-13, label]`` for the
+    accumulation and ``[label, label+6]`` for the event state.  Observed
+    releases follow a ``state_days`` cadence.
     Missing releases are represented by a gap between state intervals;
     duplicate, out-of-order, off-cadence, or overlapping labels fail closed.
     """

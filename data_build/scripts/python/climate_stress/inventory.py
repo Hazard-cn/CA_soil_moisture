@@ -211,7 +211,7 @@ def enumerate_assets(config: PipelineConfig) -> list[AssetSpec]:
                 (
                     "confirmed run mapping"
                     if endpoint_confirmed
-                    else "development-candidate run mapping pending endpoint decision"
+                    else "partial-scope run mapping with endpoint disabled"
                 )
             ),
             variable="SPEI-2W",
@@ -454,6 +454,7 @@ def _validate_netcdf_axes(
 
     checks: list[dict[str, Any]] = []
     axes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    coordinate_tolerance = float(config.data["quality"]["coordinate_tolerance"])
     errors: list[str] = []
     era_time_errors: list[str] = []
     failed_era_years: list[int] = []
@@ -528,10 +529,23 @@ def _validate_netcdf_axes(
                     np.asarray(dataset[lon_name].values, dtype=float),
                 )
                 previous_axes = axes.get(spec.family)
-                if previous_axes is not None and (
-                    not np.array_equal(previous_axes[0], current_axes[0])
-                    or not np.array_equal(previous_axes[1], current_axes[1])
-                ):
+                axes_match = previous_axes is None or (
+                    previous_axes[0].shape == current_axes[0].shape
+                    and previous_axes[1].shape == current_axes[1].shape
+                    and np.allclose(
+                        previous_axes[0],
+                        current_axes[0],
+                        rtol=0.0,
+                        atol=coordinate_tolerance,
+                    )
+                    and np.allclose(
+                        previous_axes[1],
+                        current_axes[1],
+                        rtol=0.0,
+                        atol=coordinate_tolerance,
+                    )
+                )
+                if not axes_match:
                     raise ValueError(
                         f"{spec.family} spatial axes differ across source files"
                     )
@@ -582,7 +596,7 @@ def _validate_netcdf_axes(
     if "era5_hourly" in axes:
         target_lat, target_lon = target_grid_axes(config)
         source_lat, source_lon = axes["era5_hourly"]
-        tolerance = float(config.data["quality"]["coordinate_tolerance"])
+        tolerance = coordinate_tolerance
         try:
             lat_indices = exact_subgrid_indices(
                 source_lat, target_lat, tolerance=tolerance
@@ -843,7 +857,7 @@ def validate_inventory(
             decision_basis=(
                 "explicit_user_confirmation"
                 if endpoint_confirmed
-                else "development_candidate_only"
+                else "partial_scope_counterexample"
             ),
             blocking_scope="none" if endpoint_confirmed else "spei_2w_only",
             numeric_executed_by_assets_stage=False,

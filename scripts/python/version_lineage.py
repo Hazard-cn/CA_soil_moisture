@@ -239,6 +239,7 @@ ARTIFACT_GIT_POLICIES = {"never-track", "track", "track-metadata-only"}
 RUN_REPRODUCIBILITY_STATUSES = {
     "blocked_upstream_snapshot",
     "historical_static",
+    "planned_not_run",
     "reconstructed_executable",
     "verified_current",
     "verified_sensitivity",
@@ -793,6 +794,19 @@ def validate_registries(
             errors.append(
                 f"analysis_runs.csv:{line_number}: invalid reproducibility_status"
             )
+        elif row["reproducibility_status"] == "planned_not_run":
+            for field in (
+                "result_manifest",
+                "public_result",
+                "code_git_sha",
+                "run_started_at",
+                "run_completed_at",
+            ):
+                if row[field]:
+                    errors.append(
+                        f"analysis_runs.csv:{line_number}: "
+                        f"planned_not_run must leave {field} empty"
+                    )
 
     thread_windows: dict[str, tuple[date, date]] = {}
     post_git_decision_ids: set[str] = set()
