@@ -7,7 +7,7 @@ title: 2026 年对话与修改证据
 
 > 本页由 `scripts/python/version_lineage.py build-docs` 生成。只展示脱敏元数据、决策摘要和修改事件统计；原始对话与完整命令不进入仓库。
 
-初筛发现 124 个项目相关记录；按 thread ID 去重并完成语义 disposition 后，正式登记 120 个候选，其中纳入 81 个、排除 context-only 39 个。
+初筛发现 124 个Git前项目相关记录；按 thread ID 去重并完成语义 disposition 后，正式登记 120 个重建候选。另以人工脱敏方式登记 1 个Git后用户授权决策；这些记录不由Git前会话收集器生成。全部登记中纳入 82 个、排除 context-only 39 个。
 
 版本关联使用北京时间核对任务结束日期与版本 first_evidence_date；excluded 任务的 canonical_ids 为空，最终不存在早于版本首证据日期的关联。21 个纳入任务因缺少足够的版本级交叉证据而保持未映射。
 
@@ -21,12 +21,13 @@ title: 2026 年对话与修改证据
 | 月份 | 2026-04 | 18 |
 | 月份 | 2026-05 | 28 |
 | 月份 | 2026-06 | 56 |
-| 月份 | 2026-07 | 7 |
+| 月份 | 2026-07 | 8 |
 | 来源 | legacy-user | 38 |
 | 来源 | subagent | 39 |
-| 来源 | user | 43 |
-| disposition | included | 81 |
+| 来源 | user | 44 |
+| disposition | included | 82 |
 | disposition | excluded:context-only-reference | 39 |
+| disposition | post-git-user-decision | 1 |
 | 修改事件 | add-file | 26 |
 | 修改事件 | analysis-run | 30 |
 | 修改事件 | delete-observed | 9 |
@@ -36,7 +37,7 @@ title: 2026 年对话与修改证据
 | 修改事件 | plan-write | 29 |
 | 修改事件 | update-file | 25 |
 
-## 对话候选与 disposition
+## 对话候选、授权决策与 disposition
 
 | Thread ID | 开始时间 | 来源 | 范围判定 | 关联版本 | 决策摘要 | 证据等级 |
 |---|---|---|---|---|---|---|
@@ -160,9 +161,11 @@ title: 2026 年对话与修改证据
 | 019f485c-3afe-70f2-9d52-12c88ce87eaa | 2026-07-09T19:30:31.807Z | subagent | included:exact-project-cwd | analysis-v3bpath;analysis-v3med-model8;analysis-v3prhd;analysis-v3prhdsm;area-ggcp10-aggregated;area-ggcp10-harvarea;g185-old-method-corrected;mechanism-v6gleambl;scale-g185 | G185 旧方法区域 IE/DE/TE 组件的更正、重绘或证据核验。 | two-source-supported |
 | 019f485c-582e-7101-9bdc-5a999b8ed87e | 2026-07-09T19:30:39.279Z | subagent | included:exact-project-cwd | analysis-ggcp10-baseline-suite;analysis-v2;analysis-v3bpath;analysis-v3decomp;analysis-v3prhd;analysis-v3prhdsm;analysis-v3proxy;analysis-v3sub;area-ggcp10-aggregated;area-ggcp10-harvarea;data-v1;data-v3-main;g185-draft-bootstrap-v1;g185-method-upgrade;g185-old-method-corrected;g185-response-surface-v3;ggcp10-mediation-ext;mechanism-v4smstate;mechanism-v5drymed;mechanism-v6gleambl;report-v2;report-v3;report-v4;report-v5;report-v6.1;scale-b067-g195;scale-g049;scale-g057;scale-g185;scale-search-region-first | G185 旧方法区域 IE/DE/TE 组件的更正、重绘或证据核验。 | two-source-supported |
 | 019f485c-6db6-7d03-baeb-1aa913758407 | 2026-07-09T19:30:44.791Z | subagent | included:exact-project-cwd | analysis-ggcp10-baseline-suite;analysis-v3decomp;analysis-v3med-model8;analysis-v3prhd;analysis-v3prhdsm;area-ggcp10-aggregated;area-ggcp10-harvarea;data-v1;data-v2;data-v3-main;g185-method-upgrade;g185-old-method-corrected;g185-response-surface-v3;ggcp10-mediation-ext;scale-g185 | G185 旧方法区域 IE/DE/TE 组件的更正、重绘或证据核验。 | two-source-supported |
+| 019f8058-2f2f-7152-b3eb-d6eb004dee60 | 2026-07-22 | user | included:post-git-user-decision;decision_id=decision-climate-stress-input-authorization-20260722;authorization-only | data-climate-stress-2010-2019-v1 | 授权范围限于ERA5 1980/1985/1986写入新的修复目录及GLEAM 2020 SMrz/SMs写入新的年度目录，既有文件不得覆盖或删除；确认复合事件保留两个独立severity且pilot/full进程峰值预算为4/16 GiB；SPEI-2W forward-state日界endpoint经off-by-one复核后仍为PENDING_USER_DECISION。 | direct-user-confirmed |
 
 ## 修改事件的使用边界
 
 - `apply_patch` 或写入命令只能证明对话中发生过修改动作；只有与当前文件、日志、manifest 或结果相互核对后，才能提升为版本谱系证据。
 - `command_sha256` 用于在本机原始 session 中复核同一命令，不公开命令原文。
 - `path_or_artifact_id` 只使用规范化仓库 URI 或逻辑 artifact ID，不保存用户机器绝对路径。
+- `included:post-git-user-decision` 仅保存 decision ID、thread ID、授权范围、安全约束和仍待确认事项；不提交用户原话、原始对话或完整命令。

@@ -54,8 +54,19 @@ _FROZEN_V1_VALUES: dict[tuple[str, ...], Any] = {
     ("spei", "strict_min_units"): 3,
     ("spei", "dynamic_interpolation"): "nearest",
     ("spei", "manual_interpolation"): "bilinear_renormalized",
+    ("spei", "two_week_interpolation"): "bilinear_renormalized",
     ("spei", "two_week_sampling_days"): 7,
-    ("spei", "two_week_timestamp_semantics"): "unresolved",
+    ("spei", "two_week_accumulation_days"): 14,
+    ("spei", "two_week_state_days"): 7,
+    ("spei", "two_week_accumulation_timestamp_position"): "end",
+    ("spei", "two_week_state_timestamp_position"): "start",
+    ("spei", "two_week_timestamp_semantics"): (
+        "trailing_14_day_accumulation_end_with_forward_7_day_state"
+    ),
+    ("spei", "two_week_primary_threshold"): -1.0,
+    ("spei", "two_week_primary_min_units"): 1,
+    ("spei", "two_week_strict_threshold"): -1.5,
+    ("spei", "two_week_strict_min_units"): 3,
     ("spei", "two_week_label"): "run",
     ("spei", "legacy_alignment"): "nearest",
     ("spei", "product_standardization"): "native_unknown_fit_period",
@@ -80,10 +91,6 @@ _FROZEN_V1_VALUES: dict[tuple[str, ...], Any] = {
     ("compound", "hot_flash_primary"): "any_hot_pentad",
     ("compound", "hot_flash_strict"): "majority_hot_pentads",
     ("compound", "daily_hot_sm_min_days"): 5,
-    ("scope", "profile"): "non2w-dual-severity",
-    ("scope", "completion_scope_status"): "PARTIAL_SCOPE",
-    ("scope", "spei_2w_numeric"): False,
-    ("scope", "spei_2w_output"): False,
     ("scope", "compound_mode"): "dual_independent_severity",
     ("quality", "random_seed"): 42,
 }
@@ -202,6 +209,42 @@ def _validate_frozen_v1_values(data: dict[str, Any]) -> None:
                 f"Unsupported value for code-frozen {'.'.join(path)}: "
                 f"expected {expected!r}, received {current!r}"
             )
+
+
+def _validate_two_week_endpoint_decision(data: dict[str, Any]) -> None:
+    status = data.get("spei", {}).get("two_week_endpoint_decision_status")
+    if status not in {"PENDING_USER_DECISION", "CONFIRMED"}:
+        raise ValueError(
+            "spei.two_week_endpoint_decision_status must be "
+            "PENDING_USER_DECISION or CONFIRMED"
+        )
+    scope = data.get("scope", {})
+    expected = (
+        {
+            "profile": "full-spei2w-dual-severity",
+            "completion_scope_status": "FULL_SCOPE",
+            "spei_2w_numeric": True,
+            "spei_2w_output": True,
+        }
+        if status == "CONFIRMED"
+        else {
+            "profile": "non2w-dual-severity",
+            "completion_scope_status": "PARTIAL_SCOPE",
+            "spei_2w_numeric": False,
+            "spei_2w_output": False,
+        }
+    )
+    mismatched = [
+        name
+        for name, expected_value in expected.items()
+        if scope.get(name) != expected_value
+        or type(scope.get(name)) is not type(expected_value)
+    ]
+    if mismatched:
+        raise ValueError(
+            "SPEI-2W endpoint decision and scope fields are inconsistent: "
+            + ", ".join(mismatched)
+        )
 
 
 def _validate_resource_budgets(data: dict[str, Any]) -> None:
@@ -323,6 +366,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     if missing:
         raise ValueError(f"Missing config sections: {missing}")
     _validate_frozen_v1_values(data)
+    _validate_two_week_endpoint_decision(data)
     _validate_resource_budgets(data)
     _validate_resolved_paths(data, source)
     template_digest = hashlib.sha256(

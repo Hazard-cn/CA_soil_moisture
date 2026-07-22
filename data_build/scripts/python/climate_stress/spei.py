@@ -5,8 +5,10 @@ The three interfaces are intentionally separate:
 * ``legacy_v3_exact`` and ``dynamic_ext`` use nearest-neighbour values.
 * ``manual`` SPEI-1/3 uses bilinear interpolation renormalized over at least
   two valid, positive-weight source neighbours.
-* SPEI-2W remains non-numeric until the caller supplies resolved product time
-  semantics and an explicit reporting interval convention.
+* SPEI-2W contains a development-candidate split contract: each label ends a
+  trailing 14-day accumulation, while run detection maps that release to the
+  non-overlapping forward seven-day state beginning on the label date.  The
+  candidate remains disabled until the endpoint decision is confirmed.
 
 Three-dimensional NetCDF variables are read one time index at a time.  No
 function in this module materializes an entire source cube.
@@ -30,16 +32,22 @@ import numpy as np
 import pandas as pd
 
 from .core import (
+    SPEI_2W_PENDING_STATUS,
     SpeiEvent,
     SpeiRecord,
     detect_spei_runs,
     event_window_bridge_for_spei,
+    spei_2w_interval_contracts,
     spei_2w_records,
 )
 
 
 WINDOW_NAMES = ("full", "v3pre30", "v3pm10", "hepm10", "v3he", "hema")
 MANUAL_EVENT_SPECS: dict[str, tuple[float, int]] = {
+    "k10_main": (-1.0, 1),
+    "k15_strict": (-1.5, 3),
+}
+TWO_WEEK_EVENT_SPECS: dict[str, tuple[float, int]] = {
     "k10_main": (-1.0, 1),
     "k15_strict": (-1.5, 3),
 }
@@ -458,6 +466,14 @@ def _metadata_with_signature(payload: Mapping[str, object]) -> dict[str, object]
     return {**payload, "signature_sha256": hashlib.sha256(canonical).hexdigest()}
 
 
+def _sha256_file(path: Path, *, chunk_bytes: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(int(chunk_bytes)):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class SpeiCachePaths:
     root: Path
@@ -466,6 +482,15 @@ class SpeiCachePaths:
     full_month_codes: Path
     target_nearest: dict[int, Path]
     full_manual: dict[int, Path]
+    metadata: Path
+
+
+@dataclass(frozen=True)
+class TwoWeekCachePaths:
+    root: Path
+    mapping: Path
+    release_ordinals: Path
+    values: Path
     metadata: Path
 
 
@@ -667,6 +692,169 @@ def build_spei_caches(
         full_month_codes=full_codes_path,
         target_nearest=target_paths,
         full_manual=full_paths,
+        metadata=metadata_path,
+    )
+
+
+def build_two_week_cache(
+    source_path: str | Path,
+    target_latitude: Sequence[float],
+    target_longitude: Sequence[float],
+    output_root: str | Path,
+    *,
+    minimum_valid_neighbors: int = 2,
+    interpolation: str = "bilinear_renormalized",
+    accumulation_days: int = 14,
+    state_days: int = 7,
+    accumulation_timestamp_position: str = "end",
+    state_timestamp_position: str = "start",
+    timestamp_semantics: str = (
+        "trailing_14_day_accumulation_end_with_forward_7_day_state"
+    ),
+    endpoint_decision_status: str,
+    resume: bool = False,
+) -> TwoWeekCachePaths:
+    """Map the complete CHM SPEI-2W cube without loading it into memory."""
+
+    if interpolation != "bilinear_renormalized":
+        raise ValueError("Frozen SPEI-2W interpolation must be bilinear_renormalized")
+    if endpoint_decision_status != "CONFIRMED":
+        raise ValueError("SPEI-2W cache requires a confirmed endpoint decision")
+    source = Path(source_path)
+    source_sha256 = _sha256_file(source)
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    with nc.Dataset(source) as dataset:
+        mapping = build_chm_spatial_mapping(
+            _coordinate_values(dataset, "lat"),
+            _coordinate_values(dataset, "lon"),
+            target_latitude,
+            target_longitude,
+        )
+        release_dates = _time_dates(dataset)
+        # Validation is performed before any cache target is published.
+        contracts = spei_2w_interval_contracts(
+            release_dates,
+            accumulation_days=int(accumulation_days),
+            state_days=int(state_days),
+            accumulation_timestamp_position=accumulation_timestamp_position,
+            state_timestamp_position=state_timestamp_position,
+        )
+        if "SPEI-2W" not in dataset.variables:
+            raise ValueError("CHM SPEI-2W source lacks variable SPEI-2W")
+        release_ordinals = np.asarray(
+            [item.label_date.toordinal() for item in contracts], dtype=np.int32
+        )
+
+    mapping_path = root / "chm_spei_2w_spatial_mapping.npz"
+    dates_path = root / "release_date_ordinals.npy"
+    values_path = root / "full_bilinear.npy"
+    metadata_path = root / "metadata.json"
+    mapping_values = {
+        "source_latitude": mapping.source_latitude,
+        "source_longitude": mapping.source_longitude,
+        "target_latitude": mapping.target_latitude,
+        "target_longitude": mapping.target_longitude,
+        "nearest_lat_index": mapping.nearest_lat_index,
+        "nearest_lon_index": mapping.nearest_lon_index,
+        "bilinear_lat_index": mapping.bilinear_lat_index,
+        "bilinear_lon_index": mapping.bilinear_lon_index,
+        "bilinear_weights": mapping.bilinear_weights,
+        "bilinear_in_bounds": mapping.bilinear_in_bounds,
+    }
+    metadata_payload = _metadata_with_signature(
+        {
+            "source_path": str(source),
+            "source_sha256": source_sha256,
+            "variable": "SPEI-2W",
+            "release_count": int(release_ordinals.size),
+            "first_release_date": release_dates[0].isoformat(),
+            "last_release_date": release_dates[-1].isoformat(),
+            "sampling_days": int(state_days),
+            "accumulation_days": int(accumulation_days),
+            "accumulation_timestamp_position": accumulation_timestamp_position,
+            "state_days": int(state_days),
+            "state_timestamp_position": state_timestamp_position,
+            "timestamp_semantics": timestamp_semantics,
+            "endpoint_decision_status": endpoint_decision_status,
+            "accumulation_support": (
+                "confirmed: [label-13 days, label] inclusive"
+            ),
+            "event_state_support": (
+                "confirmed: [label, label+6 days] inclusive"
+            ),
+            "interpolation": interpolation,
+            "minimum_valid_neighbors": int(minimum_valid_neighbors),
+            "target_cells": mapping.target_count,
+            "source_grid": [
+                int(mapping.source_latitude.size),
+                int(mapping.source_longitude.size),
+            ],
+            "read_policy": "one explicit time index per source read",
+            "complete": True,
+        }
+    )
+    targets = (mapping_path, dates_path, values_path, metadata_path)
+    existing = [path for path in targets if path.exists()]
+    if existing and not resume:
+        raise FileExistsError(existing[0])
+    metadata_valid = resume and metadata_path.exists() and _valid_json(
+        metadata_path, metadata_payload
+    )
+    invalidate_values = False
+    if resume and metadata_path.exists() and not metadata_valid:
+        _quarantine_incomplete(metadata_path)
+        invalidate_values = True
+    mapping_valid = resume and mapping_path.exists() and _valid_npz(
+        mapping_path, mapping_values
+    )
+    if not mapping_valid:
+        if mapping_path.exists():
+            _quarantine_incomplete(mapping_path)
+        _write_npz_new(mapping_path, mapping_values)
+        invalidate_values = True
+    dates_valid = resume and dates_path.exists() and _valid_npy(
+        dates_path,
+        shape=release_ordinals.shape,
+        dtype=np.int32,
+        expected=release_ordinals,
+    )
+    if not dates_valid:
+        if dates_path.exists():
+            _quarantine_incomplete(dates_path)
+        _write_npy_new(dates_path, release_ordinals)
+        invalidate_values = True
+    values_valid = (
+        resume
+        and not invalidate_values
+        and values_path.exists()
+        and _valid_npy(
+            values_path,
+            shape=(release_ordinals.size, mapping.target_count),
+            dtype=np.float32,
+        )
+    )
+    if not values_valid:
+        if values_path.exists():
+            _quarantine_incomplete(values_path)
+        with nc.Dataset(source) as dataset:
+            _validate_source_grid(dataset, mapping)
+            _write_mapped_cache(
+                values_path,
+                dataset,
+                "SPEI-2W",
+                np.arange(release_ordinals.size, dtype=np.int64),
+                mapping,
+                method=interpolation,
+                minimum_valid_neighbors=minimum_valid_neighbors,
+            )
+    if not metadata_valid:
+        _write_json_new(metadata_path, metadata_payload)
+    return TwoWeekCachePaths(
+        root=root,
+        mapping=mapping_path,
+        release_ordinals=dates_path,
+        values=values_path,
         metadata=metadata_path,
     )
 
@@ -1435,6 +1623,453 @@ def aggregate_manual_spei_event_six_windows(
 
 
 @dataclass(frozen=True)
+class TwoWeekWindowCoverage:
+    coverage: float
+    valid_days: int
+    expected_days: int
+    min_spei: float
+
+
+def summarize_two_week_window(
+    records: Sequence[SpeiRecord],
+    *,
+    window_start: date,
+    window_end: date,
+    minimum_coverage: float = 0.9,
+) -> TwoWeekWindowCoverage:
+    """Summarize valid forward-state support, counting release gaps as missing."""
+
+    if window_end < window_start:
+        raise ValueError("window_end must not precede window_start")
+    expected_days = (window_end - window_start).days + 1
+    window_end_exclusive = window_end + timedelta(days=1)
+    valid_days = 0
+    values: list[float] = []
+    for record in records:
+        overlap_start = max(record.support_start, window_start)
+        overlap_end = min(record.support_end_exclusive, window_end_exclusive)
+        overlap_days = max((overlap_end - overlap_start).days, 0)
+        if overlap_days and record.value is not None:
+            valid_days += overlap_days
+            values.append(float(record.value))
+    coverage = valid_days / expected_days
+    minimum = (
+        min(values)
+        if coverage >= float(minimum_coverage) and values
+        else math.nan
+    )
+    return TwoWeekWindowCoverage(
+        coverage=coverage,
+        valid_days=valid_days,
+        expected_days=expected_days,
+        min_spei=minimum,
+    )
+
+
+def detect_two_week_spei_events(
+    release_dates: Sequence[date],
+    values: Sequence[float],
+    *,
+    threshold: float,
+    min_units: int,
+    accumulation_days: int = 14,
+    state_days: int = 7,
+    accumulation_timestamp_position: str = "end",
+    state_timestamp_position: str = "start",
+) -> list[SpeiEvent]:
+    """Detect runs on non-overlapping forward states; gaps and NaNs interrupt."""
+
+    records = spei_2w_records(
+        release_dates,
+        values,
+        accumulation_days=int(accumulation_days),
+        state_days=int(state_days),
+        accumulation_timestamp_position=accumulation_timestamp_position,
+        state_timestamp_position=state_timestamp_position,
+    )
+    return detect_spei_runs(
+        records,
+        threshold=float(threshold),
+        min_periods=int(min_units),
+        event_id_prefix=(
+            f"spei-2w-k{str(float(threshold)).replace('.', 'p')}-u{int(min_units)}"
+        ),
+    )
+
+
+def _merge_spei_window_metrics(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+) -> pd.DataFrame:
+    keys = [
+        name
+        for name in (
+            "source_row",
+            "era01_cell_id",
+            "grid_id_v3",
+            "grid_id",
+            "year",
+            "latitude",
+            "longitude",
+            "window",
+        )
+        if name in left.columns and name in right.columns
+    ]
+    if "source_row" not in keys or "window" not in keys:
+        raise KeyError("SPEI window metrics require source_row and window keys")
+    metrics = [name for name in right.columns if name not in keys]
+    if set(metrics).intersection(left.columns):
+        raise ValueError("SPEI monthly and 2W metric names must be disjoint")
+    return left.merge(
+        right[keys + metrics],
+        on=keys,
+        how="left",
+        validate="one_to_one",
+    )
+
+
+def aggregate_two_week_spei_event_six_windows(
+    panel: pd.DataFrame,
+    release_dates: Sequence[date],
+    values: np.ndarray,
+    *,
+    cell_index_column: str,
+    cell_index_offset: int = 0,
+    minimum_coverage: float = 0.9,
+    accumulation_days: int = 14,
+    state_days: int = 7,
+    accumulation_timestamp_position: str = "end",
+    state_timestamp_position: str = "start",
+    event_specs: Mapping[str, tuple[float, int]] = TWO_WEEK_EVENT_SPECS,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build 2W run metrics, complete events, and window bridge records."""
+
+    if cell_index_column not in panel.columns:
+        raise KeyError(f"Panel is missing cell index column {cell_index_column}")
+    if not 0.0 <= float(minimum_coverage) <= 1.0:
+        raise ValueError("minimum_coverage must lie in [0, 1]")
+    release_tuple = tuple(release_dates)
+    arrays = np.asarray(values)
+    if arrays.ndim != 2 or arrays.shape[0] != len(release_tuple):
+        raise ValueError("SPEI-2W values must be release x cell")
+    # This validates duplicate/order/cadence and constructs the fixed state support.
+    contracts = spei_2w_interval_contracts(
+        release_tuple,
+        accumulation_days=int(accumulation_days),
+        state_days=int(state_days),
+        accumulation_timestamp_position=accumulation_timestamp_position,
+        state_timestamp_position=state_timestamp_position,
+    )
+    normalized_specs = {
+        str(name): (float(threshold), int(min_units))
+        for name, (threshold, min_units) in event_specs.items()
+    }
+    if not normalized_specs or any(
+        not name or not math.isfinite(threshold) or min_units <= 0
+        for name, (threshold, min_units) in normalized_specs.items()
+    ):
+        raise ValueError("SPEI-2W event specifications are invalid")
+    cell_indices = (
+        panel[cell_index_column].to_numpy(dtype=np.int64) - int(cell_index_offset)
+    )
+    if np.any(cell_indices < 0) or np.any(cell_indices >= arrays.shape[1]):
+        raise IndexError("Panel cell indices fall outside the SPEI-2W cache")
+    key_columns = [
+        name
+        for name in (
+            "era01_cell_id",
+            "grid_id_v3",
+            "grid_id",
+            "year",
+            "latitude",
+            "longitude",
+        )
+        if name in panel.columns
+    ]
+    cell_key_columns = [name for name in key_columns if name != "year"]
+    cell_metadata: dict[int, dict[str, object]] = {}
+    for _, series in panel.iterrows():
+        cell_index = int(series[cell_index_column]) - int(cell_index_offset)
+        metadata = {name: series[name] for name in cell_key_columns}
+        previous = cell_metadata.setdefault(cell_index, metadata)
+        if any(
+            not (
+                (pd.isna(previous[name]) and pd.isna(metadata[name]))
+                or previous[name] == metadata[name]
+            )
+            for name in cell_key_columns
+        ):
+            raise ValueError(f"Cell index {cell_index} has inconsistent identity")
+
+    records_by_cell: dict[int, tuple[SpeiRecord, ...]] = {}
+    event_cache: dict[tuple[int, str], list[SpeiEvent]] = {}
+    public_ids: dict[tuple[int, str, str], str] = {}
+    event_payloads: dict[str, dict[str, object]] = {}
+    release_position = {
+        item.label_date.isoformat(): position
+        for position, item in enumerate(contracts)
+    }
+    for cell_index in sorted(cell_metadata):
+        vector = arrays[:, cell_index]
+        records = spei_2w_records(
+            release_tuple,
+            vector,
+            accumulation_days=int(accumulation_days),
+            state_days=int(state_days),
+            accumulation_timestamp_position=accumulation_timestamp_position,
+            state_timestamp_position=state_timestamp_position,
+        )
+        records_by_cell[cell_index] = records
+        valid_source = np.isfinite(vector)
+        metadata = cell_metadata[cell_index]
+        raw_identifier = metadata.get(
+            "era01_cell_id", cell_index + int(cell_index_offset)
+        )
+        identifier = (
+            int(raw_identifier)
+            if not pd.isna(raw_identifier)
+            else cell_index + int(cell_index_offset)
+        )
+        for spec_name, (threshold, min_units) in normalized_specs.items():
+            events = detect_spei_runs(
+                records,
+                threshold=threshold,
+                min_periods=min_units,
+                event_id_prefix=f"spei-2w-{spec_name}",
+            )
+            event_cache[(cell_index, spec_name)] = events
+            for event_number, event in enumerate(events, start=1):
+                public_id = (
+                    f"{identifier}:chm_spei_2w_{spec_name}:{event_number:04d}"
+                )
+                public_ids[(cell_index, spec_name, event.event_id)] = public_id
+                start_position = release_position[str(event.records[0].label)]
+                end_position = release_position[str(event.records[-1].label)]
+                first_contract = contracts[start_position]
+                last_contract = contracts[end_position]
+                left_adjacent_known = (
+                    start_position > 0
+                    and (
+                        first_contract.label_date
+                        - contracts[start_position - 1].label_date
+                    ).days
+                    == int(state_days)
+                    and bool(valid_source[start_position - 1])
+                )
+                right_adjacent_known = (
+                    end_position + 1 < len(contracts)
+                    and (
+                        contracts[end_position + 1].label_date
+                        - last_contract.label_date
+                    ).days
+                    == int(state_days)
+                    and bool(valid_source[end_position + 1])
+                )
+                event_payloads[public_id] = {
+                    **metadata,
+                    "event_id": public_id,
+                    "timescale": "2W",
+                    "variant": spec_name,
+                    "threshold": threshold,
+                    "minimum_duration_releases": min_units,
+                    "accumulation_days": int(accumulation_days),
+                    "state_days": int(state_days),
+                    "start_date": event.start,
+                    "end_date": event.end,
+                    "first_release_date": first_contract.label_date,
+                    "last_release_date": last_contract.label_date,
+                    "first_accumulation_start": first_contract.accumulation_start,
+                    "last_accumulation_end": (
+                        last_contract.accumulation_end_exclusive
+                        - timedelta(days=1)
+                    ),
+                    "release_count": event.period_count,
+                    "duration_days": event.duration_days,
+                    "severity_spei_releases": event.severity,
+                    "mean_intensity_spei": event.mean_intensity,
+                    "min_spei": event.min_spei,
+                    "peak_threshold_deficit": event.peak_threshold_deficit,
+                    "source_left_censored": not left_adjacent_known,
+                    "source_right_censored": not right_adjacent_known,
+                }
+
+    rows: list[dict[str, object]] = []
+    bridge_rows: list[dict[str, object]] = []
+    retained_event_ids: set[str] = set()
+    empty_summary = SpeiRunWindowSummary(
+        False, 0, 0, 0.0, 0, 0, 0, 0, 0.0,
+        math.nan, math.nan, math.nan, 0, 0,
+    )
+    for source_row, series in panel.iterrows():
+        row = series.to_dict()
+        cell_index = int(row[cell_index_column]) - int(cell_index_offset)
+        records = records_by_cell[cell_index]
+        for window in WINDOW_NAMES:
+            output = {name: row[name] for name in key_columns}
+            output.update({"source_row": source_row, "window": window})
+            bounds = _window_dates(row, window)
+            coverage = (
+                summarize_two_week_window(
+                    records,
+                    window_start=bounds[0],
+                    window_end=bounds[1],
+                    minimum_coverage=minimum_coverage,
+                )
+                if bounds is not None
+                else TwoWeekWindowCoverage(math.nan, 0, 0, math.nan)
+            )
+            coverage_valid = (
+                bounds is not None
+                and math.isfinite(coverage.coverage)
+                and coverage.coverage >= minimum_coverage
+                and math.isfinite(coverage.min_spei)
+            )
+            output.update(
+                {
+                    "chm_spei_2w_event_coverage": coverage.coverage,
+                    "chm_spei_2w_event_valid_days": coverage.valid_days,
+                    "chm_spei_2w_event_expected_days": coverage.expected_days,
+                }
+            )
+            for spec_name, (threshold, _min_units) in normalized_specs.items():
+                stem = f"chm_spei_2w_{spec_name}"
+                events = event_cache[(cell_index, spec_name)]
+                summary = (
+                    summarize_spei_events_for_window(
+                        events, window_start=bounds[0], window_end=bounds[1]
+                    )
+                    if bounds is not None
+                    else empty_summary
+                )
+                if coverage_valid:
+                    metric_values: dict[str, object] = {
+                        "any": float(summary.any_event),
+                        "count": summary.event_count,
+                        "window_total_duration_days": summary.window_duration_days,
+                        "window_total_duration_releases_equiv": summary.window_duration_periods,
+                        "window_max_duration_days": summary.window_max_duration_days,
+                        "complete_total_duration_days": summary.complete_duration_days,
+                        "complete_total_duration_releases": summary.complete_duration_periods,
+                        "complete_max_duration_days": summary.complete_max_duration_days,
+                        "severity_spei_releases": summary.severity,
+                        "mean_intensity_spei": summary.mean_intensity,
+                        "event_min_spei": summary.min_spei,
+                        "window_min_spei": coverage.min_spei,
+                        "peak_threshold_deficit": summary.peak_threshold_deficit,
+                        "left_censored_count": summary.left_censored_events,
+                        "right_censored_count": summary.right_censored_events,
+                    }
+                else:
+                    metric_values = {
+                        name: math.nan
+                        for name in (
+                            "any",
+                            "count",
+                            "window_total_duration_days",
+                            "window_total_duration_releases_equiv",
+                            "window_max_duration_days",
+                            "complete_total_duration_days",
+                            "complete_total_duration_releases",
+                            "complete_max_duration_days",
+                            "severity_spei_releases",
+                            "mean_intensity_spei",
+                            "event_min_spei",
+                            "window_min_spei",
+                            "peak_threshold_deficit",
+                            "left_censored_count",
+                            "right_censored_count",
+                        )
+                    }
+                output.update(
+                    {f"{stem}_{name}": value for name, value in metric_values.items()}
+                )
+                if bounds is None:
+                    continue
+                for event in events:
+                    bridge = event_window_bridge_for_spei(
+                        event, window_start=bounds[0], window_end=bounds[1]
+                    )
+                    if bridge is None:
+                        continue
+                    public_id = public_ids[
+                        (cell_index, spec_name, event.event_id)
+                    ]
+                    retained_event_ids.add(public_id)
+                    release_equivalents, minimum = _spei_event_window_support(
+                        event, window_start=bounds[0], window_end=bounds[1]
+                    )
+                    bridge_rows.append(
+                        {
+                            **{name: row[name] for name in key_columns},
+                            "source_row": source_row,
+                            "window": window,
+                            "event_id": public_id,
+                            "timescale": "2W",
+                            "variant": spec_name,
+                            "threshold": threshold,
+                            "accumulation_days": int(accumulation_days),
+                            "state_days": int(state_days),
+                            "window_coverage": coverage.coverage,
+                            "window_coverage_ok": coverage_valid,
+                            "event_count": 1,
+                            "window_duration_days": bridge.active_duration,
+                            "window_duration_releases_equiv": release_equivalents,
+                            "complete_duration_days": event.duration_days,
+                            "complete_duration_releases": event.period_count,
+                            "severity_spei_releases": bridge.severity,
+                            "mean_intensity_spei": (
+                                bridge.severity / release_equivalents
+                                if release_equivalents > 0
+                                else math.nan
+                            ),
+                            "min_spei": minimum,
+                            "peak_threshold_deficit": (
+                                max(threshold - minimum, 0.0)
+                                if math.isfinite(minimum)
+                                else math.nan
+                            ),
+                            "left_censored": bridge.left_censored,
+                            "right_censored": bridge.right_censored,
+                            "source_left_censored": event_payloads[public_id][
+                                "source_left_censored"
+                            ],
+                            "source_right_censored": event_payloads[public_id][
+                                "source_right_censored"
+                            ],
+                        }
+                    )
+            rows.append(output)
+    long = pd.DataFrame(rows)
+    if len(long) != len(panel) * len(WINDOW_NAMES):
+        raise AssertionError("SPEI-2W long table is not panel x six windows")
+    if long.duplicated(["source_row", "window"]).any():
+        raise AssertionError("SPEI-2W long table key is not unique")
+    event_frame = pd.DataFrame(
+        [
+            payload
+            for event_id, payload in event_payloads.items()
+            if event_id in retained_event_ids
+        ]
+    )
+    if event_frame.empty:
+        event_frame = pd.DataFrame(
+            {
+                "event_id": pd.Series(dtype="string"),
+                "timescale": pd.Series(dtype="string"),
+            }
+        )
+    bridge_frame = pd.DataFrame(bridge_rows)
+    if bridge_frame.empty:
+        bridge_frame = pd.DataFrame(
+            {
+                "event_id": pd.Series(dtype="string"),
+                "timescale": pd.Series(dtype="string"),
+            }
+        )
+    return long, event_frame, bridge_frame
+
+
+@dataclass(frozen=True)
 class SpeiAggregationBlock:
     """One bounded spatial block of the five canonical SPEI tables."""
 
@@ -1461,6 +2096,13 @@ def iter_spei_aggregation_blocks(
     minimum_coverage: float = 0.9,
     deficit_threshold: float = -1.0,
     event_specs: Mapping[str, tuple[float, int]] = MANUAL_EVENT_SPECS,
+    two_week_release_dates: Sequence[date] | None = None,
+    two_week_values: np.ndarray | None = None,
+    two_week_accumulation_days: int = 14,
+    two_week_state_days: int = 7,
+    two_week_accumulation_timestamp_position: str = "end",
+    two_week_state_timestamp_position: str = "start",
+    two_week_event_specs: Mapping[str, tuple[float, int]] = TWO_WEEK_EVENT_SPECS,
 ) -> Iterator[SpeiAggregationBlock]:
     """Aggregate spatial blocks without materializing the full panel outputs.
 
@@ -1497,6 +2139,15 @@ def iter_spei_aggregation_blocks(
             int(cell_count),
         ):
             raise ValueError(f"SPEI-{scale} target cache has an unexpected shape")
+    if (two_week_release_dates is None) != (two_week_values is None):
+        raise ValueError("SPEI-2W dates and values must be supplied together")
+    if two_week_values is not None:
+        two_week_array = np.asarray(two_week_values)
+        if two_week_array.ndim != 2 or two_week_array.shape != (
+            len(tuple(two_week_release_dates or ())),
+            int(cell_count),
+        ):
+            raise ValueError("SPEI-2W cache has an unexpected shape")
 
     ranges = (
         tuple(
@@ -1550,6 +2201,31 @@ def iter_spei_aggregation_blocks(
                 event_specs=event_specs,
             )
         )
+        if two_week_values is not None and two_week_release_dates is not None:
+            two_week_long, two_week_events, two_week_bridges = (
+                aggregate_two_week_spei_event_six_windows(
+                    block_panel,
+                    two_week_release_dates,
+                    np.asarray(two_week_values[:, cell_start:cell_stop]),
+                    cell_index_column=cell_index_column,
+                    cell_index_offset=cell_start,
+                    minimum_coverage=minimum_coverage,
+                    accumulation_days=two_week_accumulation_days,
+                    state_days=two_week_state_days,
+                    accumulation_timestamp_position=(
+                        two_week_accumulation_timestamp_position
+                    ),
+                    state_timestamp_position=two_week_state_timestamp_position,
+                    event_specs=two_week_event_specs,
+                )
+            )
+            event_long = _merge_spei_window_metrics(event_long, two_week_long)
+            events = pd.concat(
+                [events, two_week_events], ignore_index=True, sort=False
+            )
+            event_bridges = pd.concat(
+                [event_bridges, two_week_bridges], ignore_index=True, sort=False
+            )
         yield SpeiAggregationBlock(
             cell_start=cell_start,
             cell_stop=cell_stop,
@@ -1692,17 +2368,60 @@ class TwoWeekAudit:
     status: str
     numeric_executed: bool
     config_semantics: str
-    timestamp_position: str | None
+    endpoint_decision_status: str
+    accumulation_timestamp_position: str | None
+    state_timestamp_position: str | None
+    accumulation_days: int | None
     state_days: int | None
+    release_count: int
+    missing_release_slots: int
+    cell_count: int
+    canonical_field_count: int
+    event_rows: int
+    bridge_rows: int
+    count_scan_batch_size: int
+    event_count_scan_max_batch_rows: int
+    bridge_count_scan_max_batch_rows: int
+    primary_threshold: float
+    primary_min_units: int
+    strict_threshold: float
+    strict_min_units: int
     reason: str
 
     def as_dict(self) -> dict[str, object]:
+        support_status = (
+            "confirmed"
+            if self.endpoint_decision_status == "CONFIRMED"
+            else "development_candidate"
+        )
         return {
             "status": self.status,
             "numeric_executed": self.numeric_executed,
             "config_semantics": self.config_semantics,
-            "timestamp_position": self.timestamp_position,
+            "endpoint_decision_status": self.endpoint_decision_status,
+            "accumulation_timestamp_position": self.accumulation_timestamp_position,
+            "state_timestamp_position": self.state_timestamp_position,
+            "accumulation_days": self.accumulation_days,
             "state_days": self.state_days,
+            "accumulation_support": (
+                f"{support_status}: [label-13 days, label] inclusive"
+            ),
+            "event_state_support": (
+                f"{support_status}: [label, label+6 days] inclusive"
+            ),
+            "release_count": self.release_count,
+            "missing_release_slots": self.missing_release_slots,
+            "cell_count": self.cell_count,
+            "canonical_field_count": self.canonical_field_count,
+            "event_rows": self.event_rows,
+            "bridge_rows": self.bridge_rows,
+            "count_scan_batch_size": self.count_scan_batch_size,
+            "event_count_scan_max_batch_rows": self.event_count_scan_max_batch_rows,
+            "bridge_count_scan_max_batch_rows": self.bridge_count_scan_max_batch_rows,
+            "primary_threshold": self.primary_threshold,
+            "primary_min_units": self.primary_min_units,
+            "strict_threshold": self.strict_threshold,
+            "strict_min_units": self.strict_min_units,
             "reason": self.reason,
         }
 
@@ -1712,44 +2431,146 @@ def prepare_two_week_records(
     values: Sequence[float],
     *,
     config_semantics: str,
-    timestamp_position: str | None,
+    endpoint_decision_status: str,
+    accumulation_timestamp_position: str | None,
+    state_timestamp_position: str | None,
+    accumulation_days: int | None,
     state_days: int | None,
+    primary_threshold: float = -1.0,
+    primary_min_units: int = 1,
+    strict_threshold: float = -1.5,
+    strict_min_units: int = 3,
+    cell_count: int = 0,
+    canonical_field_count: int = 0,
+    event_rows: int = 0,
+    bridge_rows: int = 0,
+    count_scan_batch_size: int = 65_536,
+    event_count_scan_max_batch_rows: int = 0,
+    bridge_count_scan_max_batch_rows: int = 0,
 ) -> tuple[tuple[SpeiRecord, ...] | None, TwoWeekAudit]:
     """Execute 2W numerics only after all time semantics are explicitly resolved."""
 
+    if endpoint_decision_status != "CONFIRMED":
+        audit = TwoWeekAudit(
+            SPEI_2W_PENDING_STATUS,
+            False,
+            str(config_semantics),
+            str(endpoint_decision_status),
+            accumulation_timestamp_position,
+            state_timestamp_position,
+            accumulation_days,
+            state_days,
+            0,
+            0,
+            int(cell_count),
+            int(canonical_field_count),
+            int(event_rows),
+            int(bridge_rows),
+            int(count_scan_batch_size),
+            int(event_count_scan_max_batch_rows),
+            int(bridge_count_scan_max_batch_rows),
+            float(primary_threshold),
+            int(primary_min_units),
+            float(strict_threshold),
+            int(strict_min_units),
+            "Development candidate is disabled until the endpoint decision is confirmed",
+        )
+        return None, audit
     if str(config_semantics).strip().lower() == "unresolved":
         audit = TwoWeekAudit(
             "SKIPPED_UNRESOLVED_TIME_SEMANTICS",
             False,
             str(config_semantics),
-            timestamp_position,
+            str(endpoint_decision_status),
+            accumulation_timestamp_position,
+            state_timestamp_position,
+            accumulation_days,
             state_days,
+            0,
+            0,
+            int(cell_count),
+            int(canonical_field_count),
+            int(event_rows),
+            int(bridge_rows),
+            int(count_scan_batch_size),
+            int(event_count_scan_max_batch_rows),
+            int(bridge_count_scan_max_batch_rows),
+            float(primary_threshold),
+            int(primary_min_units),
+            float(strict_threshold),
+            int(strict_min_units),
             "Config keeps CHM SPEI-2W timestamp semantics unresolved",
         )
         return None, audit
-    if timestamp_position not in {"start", "end"} or state_days is None or state_days <= 0:
+    if (
+        accumulation_timestamp_position != "end"
+        or state_timestamp_position != "start"
+        or accumulation_days is None
+        or accumulation_days <= 0
+        or state_days is None
+        or state_days <= 0
+    ):
         audit = TwoWeekAudit(
             "SKIPPED_INCOMPLETE_TIME_PARAMETERS",
             False,
             str(config_semantics),
-            timestamp_position,
+            str(endpoint_decision_status),
+            accumulation_timestamp_position,
+            state_timestamp_position,
+            accumulation_days,
             state_days,
-            "Resolved config also requires timestamp_position and positive state_days",
+            0,
+            0,
+            int(cell_count),
+            int(canonical_field_count),
+            int(event_rows),
+            int(bridge_rows),
+            int(count_scan_batch_size),
+            int(event_count_scan_max_batch_rows),
+            int(bridge_count_scan_max_batch_rows),
+            float(primary_threshold),
+            int(primary_min_units),
+            float(strict_threshold),
+            int(strict_min_units),
+            "Resolved config requires accumulation-end and forward-state parameters",
         )
         return None, audit
     records = spei_2w_records(
         timestamps,
         values,
+        accumulation_days=int(accumulation_days),
         state_days=int(state_days),
-        timestamp_position=timestamp_position,
+        accumulation_timestamp_position=accumulation_timestamp_position,
+        state_timestamp_position=state_timestamp_position,
     )
+    gaps = [
+        (current - previous).days
+        for previous, current in zip(timestamps, timestamps[1:])
+    ]
+    missing_slots = sum(max(gap // int(state_days) - 1, 0) for gap in gaps)
     return records, TwoWeekAudit(
         "EXECUTED",
         True,
         str(config_semantics),
-        timestamp_position,
+        str(endpoint_decision_status),
+        accumulation_timestamp_position,
+        state_timestamp_position,
+        int(accumulation_days),
         int(state_days),
-        "Caller supplied resolved semantics and explicit reporting intervals",
+        len(records),
+        missing_slots,
+        int(cell_count),
+        int(canonical_field_count),
+        int(event_rows),
+        int(bridge_rows),
+        int(count_scan_batch_size),
+        int(event_count_scan_max_batch_rows),
+        int(bridge_count_scan_max_batch_rows),
+        float(primary_threshold),
+        int(primary_min_units),
+        float(strict_threshold),
+        int(strict_min_units),
+        "Confirmed endpoint decision and explicit accumulation/state mapping executed",
     )
 
 

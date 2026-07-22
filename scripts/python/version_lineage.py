@@ -31,6 +31,10 @@ DOC_GAPS = ROOT / "docs" / "PRE_GIT_RECONSTRUCTION_GAPS.md"
 DOC_CONVERSATION_EVIDENCE = ROOT / "docs" / "CONVERSATION_EVIDENCE.md"
 CUTOFF = date(2026, 7, 13)
 RECONSTRUCTION_START = date(2026, 1, 1)
+POST_GIT_DECISION_PREFIX = "included:post-git-user-decision;"
+POST_GIT_DECISION_ID_PATTERN = re.compile(
+    r"(?:^|;)decision_id=([a-z0-9]+(?:[.-][a-z0-9]+)*)(?:;|$)"
+)
 INITIAL_CONVERSATION_CANDIDATES = 124
 FROZEN_SCALE_COUNTS = {
     "sample-g049": ("50844", "15737"),
@@ -245,6 +249,7 @@ CONVERSATION_EVIDENCE_LEVELS = {
     "not-evidence",
     "single-source-inferred",
     "two-source-supported",
+    "direct-user-confirmed",
 }
 CHANGE_OPERATIONS = {
     "add-file",
@@ -790,6 +795,7 @@ def validate_registries(
             )
 
     thread_windows: dict[str, tuple[date, date]] = {}
+    post_git_decision_ids: set[str] = set()
     conversation_limits = {
         "thread_id": 64,
         "parent_thread_id": 64,
@@ -819,6 +825,7 @@ def validate_registries(
         if row["evidence_level"] not in CONVERSATION_EVIDENCE_LEVELS:
             errors.append(f"conversation_registry.csv:{line_number}: invalid evidence_level")
         excluded = row["scope_reason"].startswith("excluded:")
+        post_git_decision = row["scope_reason"].startswith(POST_GIT_DECISION_PREFIX)
         if excluded != (row["evidence_level"] == "not-evidence"):
             errors.append(
                 f"conversation_registry.csv:{line_number}: disposition/evidence mismatch"
@@ -831,7 +838,13 @@ def validate_registries(
         ended_date = timestamp_date(row["ended_at"])
         if started_date is None or ended_date is None:
             errors.append(f"conversation_registry.csv:{line_number}: invalid timestamp")
-        elif not (
+        elif post_git_decision and not (
+            CUTOFF <= started_date <= ended_date
+        ):
+            errors.append(
+                f"conversation_registry.csv:{line_number}: invalid post-Git decision timestamp"
+            )
+        elif not post_git_decision and not (
             RECONSTRUCTION_START <= started_date <= ended_date < CUTOFF
         ):
             errors.append(
@@ -839,6 +852,30 @@ def validate_registries(
             )
         else:
             thread_windows[row["thread_id"]] = (started_date, ended_date)
+        if post_git_decision:
+            if row["source_type"] != "user":
+                errors.append(
+                    f"conversation_registry.csv:{line_number}: post-Git decision must be user-sourced"
+                )
+            if row["evidence_level"] != "direct-user-confirmed":
+                errors.append(
+                    f"conversation_registry.csv:{line_number}: post-Git decision must use direct-user-confirmed"
+                )
+            decision_match = POST_GIT_DECISION_ID_PATTERN.search(row["scope_reason"])
+            if decision_match is None:
+                errors.append(
+                    f"conversation_registry.csv:{line_number}: post-Git decision lacks decision_id"
+                )
+            elif decision_match.group(1) in post_git_decision_ids:
+                errors.append(
+                    f"conversation_registry.csv:{line_number}: duplicate post-Git decision_id"
+                )
+            else:
+                post_git_decision_ids.add(decision_match.group(1))
+            if not row["canonical_ids"]:
+                errors.append(
+                    f"conversation_registry.csv:{line_number}: post-Git decision lacks canonical_ids"
+                )
         for canonical_id in split_ids(row["canonical_ids"]):
             if canonical_id in version_ids:
                 resolved = canonical_id
@@ -1421,6 +1458,14 @@ def generated_gaps(registries: dict[str, Registry]) -> str:
 def generated_conversation_evidence(registries: dict[str, Registry]) -> str:
     conversations = registries["conversation_registry.csv"].rows
     changes = registries["change_events.csv"].rows
+    post_git_decisions = [
+        row
+        for row in conversations
+        if row["scope_reason"].startswith(POST_GIT_DECISION_PREFIX)
+    ]
+    reconstructed_conversations = [
+        row for row in conversations if row not in post_git_decisions
+    ]
     by_month: dict[str, int] = defaultdict(int)
     by_source: dict[str, int] = defaultdict(int)
     by_operation: dict[str, int] = defaultdict(int)
@@ -1451,7 +1496,7 @@ def generated_conversation_evidence(registries: dict[str, Registry]) -> str:
         "",
         "> 本页由 `scripts/python/version_lineage.py build-docs` 生成。只展示脱敏元数据、决策摘要和修改事件统计；原始对话与完整命令不进入仓库。",
         "",
-        f"初筛发现 {INITIAL_CONVERSATION_CANDIDATES} 个项目相关记录；按 thread ID 去重并完成语义 disposition 后，正式登记 {len(conversations)} 个候选，其中纳入 {included} 个、排除 context-only {excluded} 个。",
+        f"初筛发现 {INITIAL_CONVERSATION_CANDIDATES} 个Git前项目相关记录；按 thread ID 去重并完成语义 disposition 后，正式登记 {len(reconstructed_conversations)} 个重建候选。另以人工脱敏方式登记 {len(post_git_decisions)} 个Git后用户授权决策；这些记录不由Git前会话收集器生成。全部登记中纳入 {included} 个、排除 context-only {excluded} 个。",
         "",
         f"版本关联使用北京时间核对任务结束日期与版本 first_evidence_date；excluded 任务的 canonical_ids 为空，最终不存在早于版本首证据日期的关联。{included_unmapped} 个纳入任务因缺少足够的版本级交叉证据而保持未映射。",
         "",
@@ -1468,12 +1513,13 @@ def generated_conversation_evidence(registries: dict[str, Registry]) -> str:
         lines.append(f"| 来源 | {markdown_escape(key)} | {value} |")
     lines.append(f"| disposition | included | {included} |")
     lines.append(f"| disposition | excluded:context-only-reference | {excluded} |")
+    lines.append(f"| disposition | post-git-user-decision | {len(post_git_decisions)} |")
     for key, value in sorted(by_operation.items()):
         lines.append(f"| 修改事件 | {markdown_escape(key)} | {value} |")
     lines.extend(
         [
             "",
-            "## 对话候选与 disposition",
+            "## 对话候选、授权决策与 disposition",
             "",
             "| Thread ID | 开始时间 | 来源 | 范围判定 | 关联版本 | 决策摘要 | 证据等级 |",
             "|---|---|---|---|---|---|---|",
@@ -1504,6 +1550,7 @@ def generated_conversation_evidence(registries: dict[str, Registry]) -> str:
             "- `apply_patch` 或写入命令只能证明对话中发生过修改动作；只有与当前文件、日志、manifest 或结果相互核对后，才能提升为版本谱系证据。",
             "- `command_sha256` 用于在本机原始 session 中复核同一命令，不公开命令原文。",
             "- `path_or_artifact_id` 只使用规范化仓库 URI 或逻辑 artifact ID，不保存用户机器绝对路径。",
+            "- `included:post-git-user-decision` 仅保存 decision ID、thread ID、授权范围、安全约束和仍待确认事项；不提交用户原话、原始对话或完整命令。",
             "",
         ]
     )

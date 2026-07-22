@@ -44,6 +44,9 @@ quality_reports/*
 !quality_reports/handoffs/**
 !quality_reports/file_inventory/
 !quality_reports/file_inventory/**
+# The machine-readable local transfer audit is retained locally; its durable
+# repository-safe rendering is the adjacent Markdown provenance record.
+quality_reports/file_inventory/2026-07-22_gleam43a_2020_download_provenance.json
 !quality_reports/lineage/
 !quality_reports/lineage/**
 !quality_reports/version_registry.csv

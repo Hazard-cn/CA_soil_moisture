@@ -16,6 +16,11 @@ title: Git 前版本重建缺口
 | mechanism-sm-state-wide-april-missing | missing | missing-snapshot | The exact April snapshot consumed by v4/v5 is unavailable; the present same-named file was modified on 2026-05-18 and cannot substitute for it. |
 | mechanism-sm-state-analysis-ready-missing | missing | missing-snapshot | Historical analysis-ready output referenced by scripts and plans but absent from the current filesystem. |
 | mechanism-v6-nowet-nop30-ready-missing | missing | missing-snapshot | Historical variant referenced by code but absent from the current filesystem. |
+| climate-stress-era5-repair-required-v1 | missing | single-source-inferred | No validated immutable bundle exists yet: 1980 supplies the UTC+8 first-day boundary and 1985/1986 belong to the 1981-2010 threshold baseline; all three CDS requests are queued. Authorization decision_id=decision-climate-stress-input-authorization-20260722 permits only new repair-directory writes and forbids overwriting or deleting existing files; sanitized metadata are in conversation_registry.csv. |
+| data-climate-stress-panel-v1-pilot-output | missing | single-source-inferred | Planned 100-grid by 2010/2016/2019 real pilot output; it has not been generated. Synthetic DAG tests are not a substitute for this artifact. |
+| data-climate-stress-panel-v1-full-output | missing | single-source-inferred | Planned full output: 221800 grid-years in the wide panel and 1330800 grid-year-window rows in the long panel, plus NetCDF, DTA and audit layers; no full run exists. |
+| data-climate-stress-panel-v1-pilot-manifest | missing | single-source-inferred | The real pilot manifest has not been generated; no run_id, stage-resource evidence, round-trip validation or output hashes are registered. |
+| data-climate-stress-panel-v1-full-manifest | missing | single-source-inferred | The full-run manifest has not been generated and cannot be inferred from configuration or synthetic tests. |
 
 ## 不能解释为同期可复现的运行
 
@@ -46,6 +51,7 @@ title: Git 前版本重建缺口
 | run-ggcp10-mediation-ext-20260519 | ggcp10-mediation-ext | reconstructed_executable |
 | run-scale-region-first-20260611 | scale-search-region-first | reconstructed_executable |
 | run-g185-draft-bootstrap-v1-20260620 | g185-draft-bootstrap-v1 | verified_superseded_interpretation |
+| run-data-climate-stress-panel-v1-pilot-pending-20260722 | data-climate-stress-2010-2019-v1 | blocked_upstream_snapshot |
 
 ## 解释规则
 
@@ -59,3 +65,4 @@ title: Git 前版本重建缺口
 - `report-v1`：The v1 label is inferred from the later report sequence
 - `data-v2-main-pre-spei-fix`：The former local data_build/data/processed/data_v2_main.dta is missing and cannot be substituted by a later file
 - `data-v2-main-post-spei-fix`：The same historical path named data_v2_main.dta referred to a structurally different file
+- `data-climate-stress-2010-2019-v1`：GLEAM 4.3a 2020 provenance is closed; ERA5 1980 boundary and 1985/1986 baseline repair requests are queued in CDS; pilot and full runs have not started; SPEI-2W forward-state endpoint remains PENDING_USER_DECISION; no physical output or code/config hash is asserted

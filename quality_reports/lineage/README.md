@@ -1,6 +1,6 @@
 # 版本谱系登记接口
 
-本目录保存 2026-07-13 以前研究版本的非破坏性重建索引。CSV 只包含元数据和脱敏证据，不包含数据、原始对话、完整命令、日志或二进制结果。
+本目录保存 2026-07-13 以前研究版本的非破坏性重建索引，也允许人工登记Git后的范围化用户授权决策。CSV只包含元数据和脱敏证据，不包含数据、用户原话、原始对话、完整命令、日志或二进制结果；Git后决策不得由Git前会话收集器自动生成。
 
 ## 表间关系
 
@@ -10,7 +10,7 @@
 - `sample_rules.csv`：冻结 `main_sample` 和 Gxxx 等虚拟样本的谓词、规则向量与计数。
 - `method_registry.csv`：登记 estimand、outcome、exposure、mediator、controls、固定效应和推断方式。
 - `analysis_runs.csv`：把输入 artifact、sample rule、method、代码入口和结果 manifest 绑定为一次运行。
-- `conversation_registry.csv`：保存与项目相关任务的 thread 元数据、决策摘要和 evidence level。
+- `conversation_registry.csv`：保存与项目相关任务的thread元数据、决策摘要和evidence level；Git后授权必须使用`included:post-git-user-decision;decision_id=...`并标记`direct-user-confirmed`。
 - `change_events.csv`：保存脱敏修改事件、规范化目标和完整命令的 SHA-256，不保存命令原文。
 
 逻辑版本主表仍位于 `quality_reports/version_registry.csv`。每个版本必须分别填写数据变化、方法变化和结果呈现变化；详细的人类可读展开由 `docs/VERSION_CHANGELOG.md` 自动生成。

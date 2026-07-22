@@ -16,6 +16,7 @@ from typing import Iterable, Mapping, Sequence
 
 Number = int | float
 TriState = bool | None
+SPEI_2W_PENDING_STATUS = "SKIPPED_PENDING_ENDPOINT_DECISION"
 
 
 def _finite_float(value: Number | None) -> float | None:
@@ -424,25 +425,120 @@ def reporting_intervals(
     raise ValueError("timestamp_position must be 'start' or 'end'")
 
 
+@dataclass(frozen=True)
+class Spei2WIntervalContract:
+    """One CHM 2W release with separate accumulation and state intervals.
+
+    The accumulation interval describes the value encoded by the product.
+    The state interval is the non-overlapping interval used for run detection
+    and phenology-window intersection.  Keeping both intervals prevents the
+    overlapping 14-day accumulations from being counted as overlapping event
+    duration.
+    """
+
+    label_date: date
+    accumulation_start: date
+    accumulation_end_exclusive: date
+    state_start: date
+    state_end_exclusive: date
+
+    def __post_init__(self) -> None:
+        if self.accumulation_end_exclusive <= self.accumulation_start:
+            raise ValueError("SPEI-2W accumulation support must have positive duration")
+        if self.state_end_exclusive <= self.state_start:
+            raise ValueError("SPEI-2W state support must have positive duration")
+
+
+def spei_2w_interval_contracts(
+    timestamps: Sequence[date],
+    *,
+    accumulation_days: int,
+    state_days: int,
+    accumulation_timestamp_position: str,
+    state_timestamp_position: str,
+) -> tuple[Spei2WIntervalContract, ...]:
+    """Build the explicit CHM 2W accumulation/state mapping.
+
+    This is a development-candidate mapping only: an inclusive trailing
+    14-day accumulation ending on the label date and a forward seven-day state
+    beginning on that label date.  It must remain disabled until the endpoint
+    decision is confirmed; confirmation atomically updates scope, config, and
+    audit evidence.  Observed releases follow a ``state_days`` cadence.
+    Missing releases are represented by a gap between state intervals;
+    duplicate, out-of-order, off-cadence, or overlapping labels fail closed.
+    """
+
+    if accumulation_timestamp_position != "end":
+        raise ValueError("SPEI-2W accumulation labels must be interval endpoints")
+    if state_timestamp_position != "start":
+        raise ValueError("SPEI-2W state labels must be interval starts")
+    _validate_dates(timestamps)
+    gaps = [
+        (current - previous).days
+        for previous, current in zip(timestamps, timestamps[1:])
+    ]
+    if any(gap < int(state_days) or gap % int(state_days) != 0 for gap in gaps):
+        raise ValueError(
+            "SPEI-2W labels must be non-overlapping multiples of state_days apart"
+        )
+    accumulation = reporting_intervals(
+        timestamps,
+        state_days=int(accumulation_days),
+        timestamp_position="end",
+    )
+    states = reporting_intervals(
+        timestamps,
+        state_days=int(state_days),
+        timestamp_position="start",
+    )
+    contracts = tuple(
+        Spei2WIntervalContract(
+            label_date=stamp,
+            accumulation_start=accumulation_interval[0],
+            accumulation_end_exclusive=accumulation_interval[1],
+            state_start=state_interval[0],
+            state_end_exclusive=state_interval[1],
+        )
+        for stamp, accumulation_interval, state_interval in zip(
+            timestamps, accumulation, states, strict=True
+        )
+    )
+    if any(
+        current.state_start < previous.state_end_exclusive
+        for previous, current in zip(contracts, contracts[1:])
+    ):
+        raise AssertionError("SPEI-2W state intervals must not overlap")
+    return contracts
+
+
 def spei_2w_records(
     timestamps: Sequence[date],
     values: Sequence[Number | None],
     *,
+    accumulation_days: int,
     state_days: int,
-    timestamp_position: str,
+    accumulation_timestamp_position: str,
+    state_timestamp_position: str,
 ) -> tuple[SpeiRecord, ...]:
-    """Create 2W SPEI records from a caller-specified reporting convention."""
+    """Create non-overlapping 2W event-state records from explicit semantics."""
 
     if len(timestamps) != len(values):
         raise ValueError("timestamps and values must have the same length")
-    intervals = reporting_intervals(
+    contracts = spei_2w_interval_contracts(
         timestamps,
+        accumulation_days=accumulation_days,
         state_days=state_days,
-        timestamp_position=timestamp_position,
+        accumulation_timestamp_position=accumulation_timestamp_position,
+        state_timestamp_position=state_timestamp_position,
     )
     return tuple(
-        SpeiRecord(start, end, _finite_float(value), stamp.isoformat())
-        for stamp, value, (start, end) in zip(timestamps, values, intervals)
+        SpeiRecord(
+            contract.state_start,
+            contract.state_end_exclusive,
+            _finite_float(value),
+            contract.label_date.isoformat(),
+        )
+        for contract, value in zip(contracts, values, strict=True)
     )
 
 

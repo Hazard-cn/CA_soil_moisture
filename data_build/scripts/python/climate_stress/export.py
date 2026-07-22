@@ -18,12 +18,11 @@ import netCDF4 as nc
 import numpy as np
 import pandas as pd
 
+from .core import SPEI_2W_PENDING_STATUS
 from .grid import TARGET_GRID, TargetGridSpec, validate_v3_crosswalk
 
 
 CANONICAL_WINDOWS = ("full", "v3pre30", "v3pm10", "hepm10", "v3he", "hema")
-OUTPUT_SCOPE_ID = "non2w-dual-severity"
-OUTPUT_SCOPE_STATUS = "PARTIAL_SCOPE"
 WINDOW_SUFFIXES = {
     "full": "",
     "v3pre30": "_v3pre30",
@@ -69,6 +68,82 @@ VARIABLE_METADATA_FIELDS = (
 )
 
 
+def _validate_output_scope(scope_id: str, scope_status: str) -> tuple[str, str]:
+    identifier = str(scope_id).strip()
+    status = str(scope_status).strip()
+    if not identifier or status not in {"PARTIAL_SCOPE", "FULL_SCOPE"}:
+        raise ValueError("Output scope requires an identifier and a supported status")
+    if status == "FULL_SCOPE" and identifier != "full-spei2w-dual-severity":
+        raise ValueError("FULL_SCOPE requires full-spei2w-dual-severity")
+    if status == "PARTIAL_SCOPE" and identifier == "full-spei2w-dual-severity":
+        raise ValueError("PARTIAL_SCOPE cannot use the full scope identifier")
+    return identifier, status
+
+
+def _validate_spei_2w_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    scope_status: str,
+    numeric_executed: bool,
+    output_included: bool,
+) -> dict[str, Any]:
+    required = {
+        "status",
+        "numeric_executed",
+        "endpoint_decision_status",
+        "release_count",
+        "cell_count",
+        "canonical_field_count",
+        "event_rows",
+        "bridge_rows",
+        "accumulation_support",
+        "event_state_support",
+    }
+    missing = sorted(required.difference(evidence))
+    if missing:
+        raise ValueError(f"SPEI-2W evidence lacks fields: {missing}")
+    normalized = dict(evidence)
+    if bool(normalized["numeric_executed"]) != bool(numeric_executed):
+        raise ValueError("SPEI-2W evidence and export numeric status differ")
+    for name in (
+        "release_count",
+        "cell_count",
+        "canonical_field_count",
+        "event_rows",
+        "bridge_rows",
+    ):
+        value = normalized[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"SPEI-2W evidence {name} must be non-negative integer")
+    if scope_status == "FULL_SCOPE":
+        if normalized["status"] != "EXECUTED" or not numeric_executed:
+            raise ValueError("FULL_SCOPE requires executed SPEI-2W evidence")
+        if normalized["endpoint_decision_status"] != "CONFIRMED":
+            raise ValueError("FULL_SCOPE requires a confirmed SPEI-2W endpoint")
+        if not output_included:
+            raise ValueError("FULL_SCOPE requires SPEI-2W canonical output")
+        for name in ("release_count", "cell_count", "canonical_field_count"):
+            if int(normalized[name]) <= 0:
+                raise ValueError(f"FULL_SCOPE requires positive SPEI-2W {name}")
+    else:
+        if numeric_executed or output_included:
+            raise ValueError("PARTIAL_SCOPE must keep SPEI-2W numeric/output disabled")
+        if normalized["status"] != SPEI_2W_PENDING_STATUS:
+            raise ValueError("PARTIAL_SCOPE requires pending SPEI-2W stage evidence")
+        if normalized["endpoint_decision_status"] != "PENDING_USER_DECISION":
+            raise ValueError("PARTIAL_SCOPE requires a pending SPEI-2W endpoint")
+        for name in (
+            "release_count",
+            "cell_count",
+            "canonical_field_count",
+            "event_rows",
+            "bridge_rows",
+        ):
+            if int(normalized[name]) != 0:
+                raise ValueError(f"PARTIAL_SCOPE requires zero SPEI-2W {name}")
+    return normalized
+
+
 def _humanize_variable_name(name: str) -> str:
     return re.sub(r"_+", " ", name).strip()
 
@@ -86,6 +161,13 @@ def _infer_units(name: str) -> str:
     if name.endswith("_doy") or "window_start_doy" in lower or "window_end_doy" in lower:
         return "day of year"
     if lower.startswith("chm_spei_"):
+        if "2w" in lower:
+            if "releases_equiv" in lower:
+                return "7-day state unit equivalent"
+            if "duration_releases" in lower:
+                return "release"
+            if "severity_spei_releases" in lower:
+                return "standardized-index release"
         if "window_total_duration_periods_equiv" in lower:
             return "month equivalent"
         if "valid_days" in lower or "event_expected_days" in lower:
@@ -241,7 +323,11 @@ def _infer_time_window(name: str) -> str:
         return "Beijing civil day (UTC+8), then closed phenological interval"
     if lower.startswith("chm_spei_"):
         if "2w" in lower:
-            return "native 2-week accumulation released every 7 days"
+            return (
+                "trailing 14-day accumulation ending on the label date; "
+                "run state is the non-overlapping forward 7-day interval "
+                "beginning on that label"
+            )
         if "s1" in lower or "spei1" in lower:
             return "native monthly SPEI-1 allocated by actual interval overlap"
         if "s3" in lower or "spei3" in lower:
@@ -310,9 +396,18 @@ def _infer_rules(name: str) -> dict[str, str]:
     if lower.startswith("era5u8_"):
         calendar = "Beijing civil day (UTC+8), clipped to the closed phenological window"
     if lower.startswith("chm_spei_"):
-        if any(token in lower for token in ("k10", "k15", "event", "run")):
+        if "k10" in lower:
+            threshold = "SPEI strictly below K=-1 primary threshold"
+        elif "k15" in lower:
+            threshold = "SPEI strictly below K=-1.5 strict threshold"
+        elif any(token in lower for token in ("event", "run")):
             threshold = "SPEI K=-1 primary threshold or K=-1.5 strict threshold, as encoded in the variable name"
         calendar = "native CHM monthly or 2-week product support allocated by actual overlap"
+        if "2w" in lower:
+            calendar = (
+                "14-day trailing accumulation support and separate forward "
+                "7-day non-overlapping event-state support"
+            )
     if lower.startswith("compound_"):
         soil_threshold = "P10" if any(token in lower for token in ("p10", "sm10")) else "P20"
         threshold = f"strict Tmax>P90 and soil moisture<{soil_threshold} overlap"
@@ -350,8 +445,16 @@ def _infer_rules(name: str) -> dict[str, str]:
     elif lower.startswith("chm_spei_") and any(
         token in lower for token in ("k10", "k15", "event", "run")
     ):
-        minimum = "3 consecutive native months" if "strict" in lower else "1 native month"
-        gap = "native periods must be consecutive"
+        if "2w" in lower:
+            minimum = (
+                "3 consecutive 7-day release-state units"
+                if "strict" in lower
+                else "1 observed 7-day release-state unit"
+            )
+            gap = "missing releases or missing values interrupt runs"
+        else:
+            minimum = "3 consecutive native months" if "strict" in lower else "1 native month"
+            gap = "native periods must be consecutive"
     if any(token in lower for token in ("strict", "sensitivity", "gap2", "k15", "p10_overlap")):
         status = "sensitivity"
     if any(token in lower for token in ("audit", "coverage", "valid_days", "censored")):
@@ -373,9 +476,12 @@ def generate_variable_metadata(
     overrides: Mapping[str, Mapping[str, Any]] | None = None,
     source_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     gleam_layer_roles: Mapping[str, str] | None = None,
+    scope_id: str,
+    scope_status: str,
 ) -> dict[str, dict[str, str]]:
     """Generate complete, deterministic metadata for every canonical column."""
 
+    scope_id, scope_status = _validate_output_scope(scope_id, scope_status)
     names = [str(column) for column in columns]
     if len(names) != len(set(names)):
         raise ValueError("Variable metadata columns must be unique")
@@ -395,10 +501,21 @@ def generate_variable_metadata(
             "time_window": _infer_time_window(name),
             "layer_role": _infer_layer_role(name, gleam_layer_roles),
             "variant_status": _infer_variant_status(name),
-            "scope_id": OUTPUT_SCOPE_ID,
-            "scope_status": OUTPUT_SCOPE_STATUS,
+            "scope_id": str(scope_id),
+            "scope_status": str(scope_status),
             **_infer_rules(name),
         }
+        if name.casefold().startswith("chm_spei_2w_"):
+            support_status = (
+                "confirmed"
+                if scope_status == "FULL_SCOPE"
+                else "development_candidate"
+            )
+            details["time_window"] = (
+                f"{support_status}: trailing accumulation "
+                "[label-13 days, label] inclusive; event state "
+                "[label, label+6 days] inclusive"
+            )
         matching_source_overrides = [
             (str(prefix), dict(values))
             for prefix, values in (source_overrides or {}).items()
@@ -591,6 +708,8 @@ def write_cf_netcdf(
     version_id: str = "data-climate-stress-2010-2019-v1",
     variable_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     global_attributes: Mapping[str, Any] | None = None,
+    scope_id: str,
+    scope_status: str,
 ) -> Path:
     """Write the sparse selected-cell panel as a full-grid CF NetCDF cube."""
 
@@ -602,7 +721,12 @@ def write_cf_netcdf(
     )
     crosswalk = _static_crosswalk(long, spec)
     metrics = _metric_columns(long)
-    metadata = generate_variable_metadata(long.columns, overrides=variable_metadata)
+    metadata = generate_variable_metadata(
+        long.columns,
+        overrides=variable_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
+    )
     year_lookup = {int(year): index for index, year in enumerate(years)}
     window_lookup = {window: index for index, window in enumerate(windows)}
 
@@ -735,8 +859,8 @@ def write_cf_netcdf(
         dataset.title = "China maize climate and soil-moisture stress panel"
         dataset.summary = "Six phenological windows on the selected 0.1 degree V3-main grid union"
         dataset.version_id = version_id
-        dataset.output_scope_id = OUTPUT_SCOPE_ID
-        dataset.output_scope_status = OUTPUT_SCOPE_STATUS
+        dataset.output_scope_id = str(scope_id)
+        dataset.output_scope_status = str(scope_status)
         dataset.time_coverage_start = f"{min(years):04d}-01-01"
         dataset.time_coverage_end = f"{max(years):04d}-12-31"
         dataset.geospatial_lat_min = float(spec.south)
@@ -863,6 +987,8 @@ def write_cf_netcdf_from_partitions(
     version_id: str = "data-climate-stress-2010-2019-v1",
     variable_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     global_attributes: Mapping[str, Any] | None = None,
+    scope_id: str,
+    scope_status: str,
 ) -> Path:
     """Write CF NetCDF while holding at most one spatial Parquet block."""
 
@@ -884,7 +1010,12 @@ def write_cf_netcdf_from_partitions(
     )
     validate_v3_crosswalk(ordered_crosswalk, expected_unique=None, spec=spec)
     metrics = list(contract["metrics"])
-    metadata = generate_variable_metadata(contract["columns"], overrides=variable_metadata)
+    metadata = generate_variable_metadata(
+        contract["columns"],
+        overrides=variable_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
+    )
     year_lookup = {int(year): index for index, year in enumerate(years)}
     window_lookup = {str(window): index for index, window in enumerate(windows)}
 
@@ -1016,8 +1147,8 @@ def write_cf_netcdf_from_partitions(
         dataset.title = "China maize climate and soil-moisture stress panel"
         dataset.summary = "Six phenological windows on the selected 0.1 degree V3-main grid union"
         dataset.version_id = version_id
-        dataset.output_scope_id = OUTPUT_SCOPE_ID
-        dataset.output_scope_status = OUTPUT_SCOPE_STATUS
+        dataset.output_scope_id = str(scope_id)
+        dataset.output_scope_status = str(scope_status)
         dataset.time_coverage_start = f"{min(years):04d}-01-01"
         dataset.time_coverage_end = f"{max(years):04d}-12-31"
         dataset.geospatial_lat_min = float(spec.south)
@@ -1360,8 +1491,15 @@ def build_variable_dictionary(
     long_panel: pd.DataFrame,
     *,
     variable_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    scope_id: str,
+    scope_status: str,
 ) -> pd.DataFrame:
-    metadata = generate_variable_metadata(long_panel.columns, overrides=variable_metadata)
+    metadata = generate_variable_metadata(
+        long_panel.columns,
+        overrides=variable_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
+    )
     rows: list[dict[str, Any]] = []
     for column in long_panel.columns:
         details = metadata.get(column, {})
@@ -1600,10 +1738,16 @@ def build_material_passport(
     quality: Mapping[str, Any] | None = None,
     exclusions: Sequence[str] | None = None,
     spec: TargetGridSpec = TARGET_GRID,
+    scope_id: str,
+    scope_status: str,
+    spei_2w_numeric_executed: bool,
+    spei_2w_output_included: bool,
 ) -> dict[str, Any]:
     return {
         "material_passport_version": "1.0",
         "artifact_id": version_id,
+        "scope_id": str(scope_id),
+        "status": str(scope_status),
         "entity": "selected 0.1-degree grid x calendar year x phenological window",
         "primary_keys": list(LONG_KEY_COLUMNS),
         "rows": int(len(long_panel)),
@@ -1622,6 +1766,8 @@ def build_material_passport(
         "transformations": dict(transformations or {}),
         "quality": dict(quality or {}),
         "excluded_manual_families": list(exclusions or []),
+        "spei_2w_numeric_executed": bool(spei_2w_numeric_executed),
+        "spei_2w_output_included": bool(spei_2w_output_included),
         "dataframe_sha256": sha256_dataframe(long_panel),
     }
 
@@ -1699,9 +1845,21 @@ def export_panel_bundle(
     row_group_size: int = 262_144,
     netcdf_complevel: int = 4,
     published_output_directory: str | Path | None = None,
+    scope_id: str,
+    scope_status: str,
+    spei_2w_numeric_executed: bool,
+    spei_2w_output_included: bool,
+    spei_2w_evidence: Mapping[str, Any],
 ) -> tuple[ExportPaths, pd.DataFrame, pd.DataFrame]:
     """Write the complete canonical package after a no-overwrite preflight."""
 
+    scope_id, scope_status = _validate_output_scope(scope_id, scope_status)
+    normalized_2w_evidence = _validate_spei_2w_evidence(
+        spei_2w_evidence,
+        scope_status=scope_status,
+        numeric_executed=spei_2w_numeric_executed,
+        output_included=spei_2w_output_included,
+    )
     paths = ExportPaths.in_directory(output_directory)
     conflicts = [path for path in paths.all() if path.exists()]
     if conflicts:
@@ -1709,6 +1867,13 @@ def export_panel_bundle(
     long = canonicalize_long_panel(
         long_panel, years=years, windows=windows, expected_rows=expected_long_rows
     )
+    two_week_columns = [
+        name for name in long.columns if str(name).startswith("chm_spei_2w_")
+    ]
+    if len(two_week_columns) != int(
+        normalized_2w_evidence["canonical_field_count"]
+    ):
+        raise ValueError("SPEI-2W evidence field count differs from long panel")
     wide = pivot_long_to_wide(
         long,
         years=years,
@@ -1723,7 +1888,10 @@ def export_panel_bundle(
         wide, paths.wide_parquet, compression=compression, row_group_size=row_group_size
     )
     complete_metadata = generate_variable_metadata(
-        long.columns, overrides=variable_metadata
+        long.columns,
+        overrides=variable_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
     )
     write_cf_netcdf(
         long,
@@ -1734,6 +1902,8 @@ def export_panel_bundle(
         complevel=netcdf_complevel,
         version_id=version_id,
         variable_metadata=complete_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
     )
     write_stata_bundle(
         wide,
@@ -1742,7 +1912,12 @@ def export_panel_bundle(
         paths.merge_do,
         expected_rows=expected_wide_rows,
     )
-    dictionary = build_variable_dictionary(long, variable_metadata=complete_metadata)
+    dictionary = build_variable_dictionary(
+        long,
+        variable_metadata=complete_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
+    )
     write_variable_dictionary(
         dictionary, paths.variable_dictionary_csv, paths.variable_dictionary_md
     )
@@ -1753,6 +1928,10 @@ def export_panel_bundle(
         transformations=transformations,
         quality=quality,
         exclusions=exclusions,
+        scope_id=scope_id,
+        scope_status=scope_status,
+        spei_2w_numeric_executed=spei_2w_numeric_executed,
+        spei_2w_output_included=spei_2w_output_included,
     )
     write_json_exclusive(passport, paths.material_passport)
     output_records = {
@@ -1784,6 +1963,11 @@ def export_panel_bundle(
             "windows": list(windows),
             "years": [int(year) for year in years],
             "quality": dict(quality or {}),
+            "scope_id": str(scope_id),
+            "status": str(scope_status),
+            "spei_2w_numeric_executed": bool(spei_2w_numeric_executed),
+            "spei_2w_output_included": bool(spei_2w_output_included),
+            "spei_2w_stage_evidence": normalized_2w_evidence,
         },
     )
     write_json_exclusive(manifest, paths.manifest)
@@ -1794,8 +1978,15 @@ def _variable_dictionary_from_arrow_schema(
     schema: Any,
     *,
     variable_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    scope_id: str,
+    scope_status: str,
 ) -> pd.DataFrame:
-    metadata = generate_variable_metadata(schema.names, overrides=variable_metadata)
+    metadata = generate_variable_metadata(
+        schema.names,
+        overrides=variable_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
+    )
     return pd.DataFrame(
         [
             {
@@ -1851,11 +2042,23 @@ def export_panel_bundle_streaming(
     row_group_size: int = 262_144,
     netcdf_complevel: int = 4,
     published_output_directory: str | Path | None = None,
+    scope_id: str,
+    scope_status: str,
+    spei_2w_numeric_executed: bool,
+    spei_2w_output_included: bool,
+    spei_2w_evidence: Mapping[str, Any],
 ) -> tuple[ExportPaths, dict[str, Any]]:
     """Export the complete package with a bounded spatial working set."""
 
     from .spei import combine_parquet_partitions_new
 
+    scope_id, scope_status = _validate_output_scope(scope_id, scope_status)
+    normalized_2w_evidence = _validate_spei_2w_evidence(
+        spei_2w_evidence,
+        scope_status=scope_status,
+        numeric_executed=spei_2w_numeric_executed,
+        output_included=spei_2w_output_included,
+    )
     if compression.casefold() != "zstd":
         raise ValueError("Streaming bundle currently requires zstd Parquet compression")
     paths = ExportPaths.in_directory(output_directory)
@@ -1875,6 +2078,17 @@ def export_panel_bundle_streaming(
         expected_rows=expected_long_rows,
         expected_cells=len(crosswalk),
     )
+    two_week_columns = [
+        name for name in contract["columns"] if str(name).startswith("chm_spei_2w_")
+    ]
+    if spei_2w_output_included and not two_week_columns:
+        raise ValueError(
+            "Full-scope output contract requires canonical chm_spei_2w_* fields"
+        )
+    if spei_2w_output_included and not spei_2w_numeric_executed:
+        raise ValueError("SPEI-2W output cannot be included without executed numerics")
+    if len(two_week_columns) != int(normalized_2w_evidence["canonical_field_count"]):
+        raise ValueError("SPEI-2W evidence field count differs from canonical schema")
     if int(contract["selected_cells"]) * len(years) != int(expected_wide_rows):
         raise ValueError("Expected wide rows differ from canonical cell/year support")
 
@@ -1926,6 +2140,8 @@ def export_panel_bundle_streaming(
         contract["columns"],
         overrides=variable_metadata,
         gleam_layer_roles=gleam_layer_roles,
+        scope_id=scope_id,
+        scope_status=scope_status,
     )
     write_cf_netcdf_from_partitions(
         long_partition_source,
@@ -1937,6 +2153,8 @@ def export_panel_bundle_streaming(
         complevel=netcdf_complevel,
         version_id=version_id,
         variable_metadata=complete_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
     )
     _dta, _aliases, _merge, alias_frame, dta_report = (
         write_stata_bundle_from_partitions(
@@ -1948,7 +2166,10 @@ def export_panel_bundle_streaming(
         )
     )
     dictionary = _variable_dictionary_from_arrow_schema(
-        contract["schema"], variable_metadata=complete_metadata
+        contract["schema"],
+        variable_metadata=complete_metadata,
+        scope_id=scope_id,
+        scope_status=scope_status,
     )
     write_variable_dictionary(
         dictionary, paths.variable_dictionary_csv, paths.variable_dictionary_md
@@ -1966,11 +2187,19 @@ def export_panel_bundle_streaming(
     scope_contract = {
         "contract_version": 1,
         "version_id": version_id,
-        "scope_id": OUTPUT_SCOPE_ID,
-        "status": OUTPUT_SCOPE_STATUS,
+        "scope_id": str(scope_id),
+        "status": str(scope_status),
         "spei_2w": {
-            "numeric_executed": False,
-            "output_included": False,
+            "numeric_executed": bool(spei_2w_numeric_executed),
+            "output_included": bool(spei_2w_output_included),
+            "accumulation_support": normalized_2w_evidence[
+                "accumulation_support"
+            ],
+            "event_state_support": normalized_2w_evidence[
+                "event_state_support"
+            ],
+            "canonical_field_count": len(two_week_columns),
+            "stage_evidence": normalized_2w_evidence,
         },
         "compound_severity": {
             "heat_excess_field_suffix": "heat_excess_cdays",
@@ -1983,8 +2212,8 @@ def export_panel_bundle_streaming(
     passport = {
         "material_passport_version": "1.0",
         "artifact_id": version_id,
-        "scope_id": OUTPUT_SCOPE_ID,
-        "status": OUTPUT_SCOPE_STATUS,
+        "scope_id": str(scope_id),
+        "status": str(scope_status),
         "entity": "selected 0.1-degree grid x calendar year x phenological window",
         "primary_keys": list(LONG_KEY_COLUMNS),
         "rows": int(expected_long_rows),
@@ -2003,8 +2232,9 @@ def export_panel_bundle_streaming(
         "transformations": dict(transformations or {}),
         "quality": {**dict(quality or {}), "streaming_contract": streaming_contract},
         "excluded_manual_families": list(exclusions or []),
-        "spei_2w_numeric_executed": False,
-        "spei_2w_output_included": False,
+        "spei_2w_numeric_executed": bool(spei_2w_numeric_executed),
+        "spei_2w_output_included": bool(spei_2w_output_included),
+        "spei_2w_stage_evidence": normalized_2w_evidence,
         "compound_mixed_unit_severity_scalar_included": False,
         "dataframe_sha256": sha256_file(paths.long_parquet),
         "dataframe_hash_semantics": "SHA-256 of deterministic canonical long Parquet",
@@ -2038,10 +2268,11 @@ def export_panel_bundle_streaming(
         audit_artifacts=audit_artifacts,
         audit_record_paths=audit_record_paths,
         metadata={
-            "scope_id": OUTPUT_SCOPE_ID,
-            "status": OUTPUT_SCOPE_STATUS,
-            "spei_2w_numeric_executed": False,
-            "spei_2w_output_included": False,
+            "scope_id": str(scope_id),
+            "status": str(scope_status),
+            "spei_2w_numeric_executed": bool(spei_2w_numeric_executed),
+            "spei_2w_output_included": bool(spei_2w_output_included),
+            "spei_2w_stage_evidence": normalized_2w_evidence,
             "compound_mixed_unit_severity_scalar_included": False,
             "long_rows": expected_long_rows,
             "wide_rows": expected_wide_rows,

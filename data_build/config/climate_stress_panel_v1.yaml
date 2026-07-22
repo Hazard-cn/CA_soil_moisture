@@ -91,8 +91,18 @@ spei:
   manual_interpolation: bilinear_renormalized
   minimum_valid_neighbors: 2
   product_standardization: native_unknown_fit_period
+  two_week_interpolation: bilinear_renormalized
   two_week_sampling_days: 7
-  two_week_timestamp_semantics: unresolved
+  two_week_accumulation_days: 14
+  two_week_state_days: 7
+  two_week_accumulation_timestamp_position: end
+  two_week_state_timestamp_position: start
+  two_week_timestamp_semantics: trailing_14_day_accumulation_end_with_forward_7_day_state
+  two_week_endpoint_decision_status: PENDING_USER_DECISION
+  two_week_primary_threshold: -1.0
+  two_week_primary_min_units: 1
+  two_week_strict_threshold: -1.5
+  two_week_strict_min_units: 3
   two_week_label: run
   legacy_alignment: nearest
 

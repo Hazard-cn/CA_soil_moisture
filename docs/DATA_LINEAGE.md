@@ -16,6 +16,8 @@ flowchart LR
   n_analysis_v3prhdsm_ready_dta["analysis-v3prhdsm-ready-dta\npresent"]
   n_analysis_v3proxy_ready_dta["analysis-v3proxy-ready-dta\npresent"]
   n_analysis_v3sub_ready_dta["analysis-v3sub-ready-dta\npresent"]
+  n_climate_stress_era5_repair_required_v1["climate-stress-era5-repair-required-v1\nmissing"]
+  n_climate_stress_gleam43a_2020_sm_bundle["climate-stress-gleam43a-2020-sm-bundle\npresent"]
   n_compound_event_override_full_event_panel_v1["compound-event-override-full-event-panel-v1\npresent"]
   n_compound_event_override_model_manifest_v3["compound-event-override-model-manifest-v3\npresent"]
   n_compound_event_override_recovery_manifest_v2["compound-event-override-recovery-manifest-v2\npresent"]
@@ -23,6 +25,8 @@ flowchart LR
   n_compound_event_smoke_panel_v2["compound-event-smoke-panel-v2\npresent"]
   n_compound_event_smrz_aligned_series["compound-event-smrz-aligned-series\npresent"]
   n_compound_event_tmax_aligned_series["compound-event-tmax-aligned-series\npresent"]
+  n_data_climate_stress_panel_v1_full_output["data-climate-stress-panel-v1-full-output\nmissing"]
+  n_data_climate_stress_panel_v1_pilot_output["data-climate-stress-panel-v1-pilot-output\nmissing"]
   n_data_v1_county_city["data-v1-county-city\npresent"]
   n_data_v1_locked_panel["data-v1-locked-panel\npresent"]
   n_data_v1_master["data-v1-master\npresent"]
@@ -106,6 +110,12 @@ flowchart LR
   n_compound_event_smrz_aligned_series -->|compound-event-override-smrz-timing| n_compound_event_override_full_event_panel_v1
   n_compound_event_override_full_event_panel_v1 -->|compound-event-override-yield-models| n_compound_event_override_model_manifest_v3
   n_compound_event_override_full_event_panel_v1 -->|compound-event-override-recovery-estimation| n_compound_event_override_recovery_manifest_v2
+  n_data_v3_expanded_main -->|climate-stress-v1-pilot-grid-crosswalk| n_data_climate_stress_panel_v1_pilot_output
+  n_climate_stress_era5_repair_required_v1 -->|climate-stress-v1-pilot-era-temperature| n_data_climate_stress_panel_v1_pilot_output
+  n_data_v3_expanded_main -->|climate-stress-v1-full-grid-crosswalk| n_data_climate_stress_panel_v1_full_output
+  n_climate_stress_era5_repair_required_v1 -->|climate-stress-v1-full-era-temperature| n_data_climate_stress_panel_v1_full_output
+  n_climate_stress_gleam43a_2020_sm_bundle -->|climate-stress-v1-pilot-gleam-right-boundary| n_data_climate_stress_panel_v1_pilot_output
+  n_climate_stress_gleam43a_2020_sm_bundle -->|climate-stress-v1-full-gleam-right-boundary| n_data_climate_stress_panel_v1_full_output
 ```
 
 ## 转换登记
@@ -166,3 +176,9 @@ flowchart LR
 | edge-0052 | compound-event-smrz-aligned-series | compound-event-override-full-event-panel-v1 | repo://scripts/python/run_hotdry_event_override_stage1.py | onset-14 through onset-1 antecedent, onset through end+3 drawdown and up to 30-day recovery or censoring; not_applicable | three-source-confirmed |
 | edge-0053 | compound-event-override-full-event-panel-v1 | compound-event-override-model-manifest-v3 | repo://scripts/python/run_hotdry_event_round1_revision.py | 61,918 complete-case grid-years; joint duration-intensity model is main and separate models are retained; unchanged | three-source-confirmed |
 | edge-0054 | compound-event-override-full-event-panel-v1 | compound-event-override-recovery-manifest-v2 | repo://scripts/python/run_hotdry_event_override_recovery_v2.py | complete antecedent window and recovery follow-up until threshold, next event, season end, data end or day 30; not_applicable | three-source-confirmed |
+| edge-0055 | data-v3-expanded-main | data-climate-stress-panel-v1-pilot-output | repo://data_build/scripts/python/build_climate_stress_panel.py | planned deterministic 100-grid sample for 2010\|2016\|2019; exact pilot selection and output are not materialized; unchanged | single-source-inferred |
+| edge-0056 | climate-stress-era5-repair-required-v1 | data-climate-stress-panel-v1-pilot-output | repo://data_build/scripts/python/build_climate_stress_panel.py | requires validated 1980 boundary and 1985/1986 baseline repair files before the 2010\|2016\|2019 pilot; not_applicable | single-source-inferred |
+| edge-0057 | data-v3-expanded-main | data-climate-stress-panel-v1-full-output | repo://data_build/scripts/python/build_climate_stress_panel.py | planned 22180 target grids by 2010-2019 and six windows; no full output exists; unchanged | single-source-inferred |
+| edge-0058 | climate-stress-era5-repair-required-v1 | data-climate-stress-panel-v1-full-output | repo://data_build/scripts/python/build_climate_stress_panel.py | requires validated historical and boundary files plus a successful real pilot before full execution; not_applicable | single-source-inferred |
+| edge-0059 | climate-stress-gleam43a-2020-sm-bundle | data-climate-stress-panel-v1-pilot-output | repo://data_build/scripts/python/build_climate_stress_panel.py | validated 2020 SMrz and SMs provide right-boundary context for 2019 event recognition; the pilot transformation has not run; not_applicable | single-source-inferred |
+| edge-0060 | climate-stress-gleam43a-2020-sm-bundle | data-climate-stress-panel-v1-full-output | repo://data_build/scripts/python/build_climate_stress_panel.py | validated 2020 SMrz and SMs provide right-boundary context for 2019 event recognition; full execution remains gated by pilot; not_applicable | single-source-inferred |

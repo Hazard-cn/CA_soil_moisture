@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from .config import PipelineConfig, load_config
+from .core import SPEI_2W_PENDING_STATUS
 from .runtime import (
     RunContext,
     StageSession,
@@ -396,8 +397,14 @@ def _handle_assets(request: StageRequest) -> StageOutcome:
                 and item.get("evidence", {}).get("blocking_scope")
                 != "pipeline"
             ],
-            "spei_2w_timestamp_semantics": "unresolved",
+            "spei_2w_timestamp_semantics": request.config.data["spei"][
+                "two_week_timestamp_semantics"
+            ],
             "spei_2w_numeric_executed": False,
+            "spei_2w_numeric_stage": "spei",
+            "spei_2w_output_enabled": bool(
+                request.config.data["scope"]["spei_2w_output"]
+            ),
         },
     )
 
@@ -606,10 +613,65 @@ def _read_v3_legacy_projection(
     return pd.read_parquet(source, columns=projected), grid_name
 
 
+def _count_parquet_value_batched(
+    path: str | Path,
+    *,
+    column: str,
+    value: str,
+    batch_size: int = 65_536,
+) -> tuple[int, int]:
+    """Count one Parquet value without materializing the complete string column."""
+
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    if int(batch_size) <= 0:
+        raise ValueError("batch_size must be positive")
+    parquet = pq.ParquetFile(path)
+    if column not in parquet.schema_arrow.names:
+        raise StageValidationError(
+            f"Parquet audit output lacks {column} schema: {Path(path).name}"
+        )
+    total = 0
+    maximum = 0
+    for batch in parquet.iter_batches(
+        columns=[column], batch_size=int(batch_size)
+    ):
+        if batch.num_rows > int(batch_size):
+            raise AssertionError("Parquet audit scan exceeded its batch contract")
+        maximum = max(maximum, batch.num_rows)
+        matches = pc.fill_null(pc.equal(batch.column(0), value), False)
+        total += int(pc.sum(pc.cast(matches, "int64")).as_py() or 0)
+    return total, maximum
+
+
+def _validate_spei_2w_event_row_counts(
+    audit: Mapping[str, Any],
+    event_path: str | Path,
+    bridge_path: str | Path,
+    *,
+    batch_size: int = 65_536,
+) -> tuple[int, int, int, int]:
+    """Cross-check 2W event/bridge counts with bounded Arrow scans."""
+
+    event_rows, event_max = _count_parquet_value_batched(
+        event_path, column="timescale", value="2W", batch_size=batch_size
+    )
+    bridge_rows, bridge_max = _count_parquet_value_batched(
+        bridge_path, column="timescale", value="2W", batch_size=batch_size
+    )
+    if event_rows != int(audit.get("event_rows", -1)):
+        raise StageValidationError("SPEI-2W event rows differ from stage audit")
+    if bridge_rows != int(audit.get("bridge_rows", -1)):
+        raise StageValidationError("SPEI-2W bridge rows differ from stage audit")
+    return event_rows, bridge_rows, event_max, bridge_max
+
+
 def _handle_spei(request: StageRequest) -> StageOutcome:
     from .spei import (
         LEGACY_FIELD_MAP,
         build_spei_caches,
+        build_two_week_cache,
         combine_parquet_partitions_new,
         iter_spei_aggregation_blocks,
         legacy_v3_exact_sidecar,
@@ -620,6 +682,14 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         write_two_week_audit,
     )
 
+    spei_config = request.config.data["spei"]
+    scope_config = request.config.data["scope"]
+    two_week_enabled = bool(scope_config["spei_2w_numeric"])
+    endpoint_status = str(spei_config["two_week_endpoint_decision_status"])
+    if two_week_enabled and endpoint_status != "CONFIRMED":
+        raise StageValidationError(
+            "SPEI-2W endpoint decision is pending; FULL_SCOPE numerics are disabled"
+        )
     crosswalk = pd.read_parquet(
         _stage_file(request.context, "grid", "crosswalk.parquet")
     ).sort_values("era01_cell_id").reset_index(drop=True)
@@ -644,6 +714,27 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         ),
         resume=request.pipeline.resume,
     )
+    two_week_caches = None
+    if two_week_enabled:
+        two_week_caches = build_two_week_cache(
+            request.config.data["inputs"]["spei_2w"],
+            crosswalk["latitude"].to_numpy(),
+            crosswalk["longitude"].to_numpy(),
+            cache_root / "two_week",
+            minimum_valid_neighbors=int(spei_config["minimum_valid_neighbors"]),
+            interpolation=str(spei_config["two_week_interpolation"]),
+            accumulation_days=int(spei_config["two_week_accumulation_days"]),
+            state_days=int(spei_config["two_week_state_days"]),
+            accumulation_timestamp_position=str(
+                spei_config["two_week_accumulation_timestamp_position"]
+            ),
+            state_timestamp_position=str(
+                spei_config["two_week_state_timestamp_position"]
+            ),
+            timestamp_semantics=str(spei_config["two_week_timestamp_semantics"]),
+            endpoint_decision_status=endpoint_status,
+            resume=request.pipeline.resume,
+        )
     full_codes = load_cache_array(caches.full_month_codes)
     full_values = {
         scale: load_cache_array(path) for scale, path in caches.full_manual.items()
@@ -652,6 +743,27 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
     target_values = {
         scale: load_cache_array(path) for scale, path in caches.target_nearest.items()
     }
+    two_week_release_dates = None
+    two_week_values = None
+    two_week_event_specs = None
+    if two_week_caches is not None:
+        two_week_release_ordinals = load_cache_array(
+            two_week_caches.release_ordinals
+        )
+        two_week_release_dates = tuple(
+            date.fromordinal(int(value)) for value in two_week_release_ordinals
+        )
+        two_week_values = load_cache_array(two_week_caches.values)
+        two_week_event_specs = {
+            "k10_main": (
+                float(spei_config["two_week_primary_threshold"]),
+                int(spei_config["two_week_primary_min_units"]),
+            ),
+            "k15_strict": (
+                float(spei_config["two_week_strict_threshold"]),
+                int(spei_config["two_week_strict_min_units"]),
+            ),
+        }
     manual_path = request.work_dir / "chm_spei_manual.parquet"
     dynamic_path = request.work_dir / "chm_spei_dynamic_ext.parquet"
     event_long_path = request.work_dir / "chm_spei_event_window_long.parquet"
@@ -686,9 +798,10 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
             "source_row",
             "window",
             "chm_spei_s1_k10_main_count",
-        ),
-        "events": ("event_id",),
-        "event_bridge": ("event_id",),
+        )
+        + (("chm_spei_2w_k10_main_count",) if two_week_enabled else ()),
+        "events": ("event_id", "timescale"),
+        "event_bridge": ("event_id", "timescale"),
     }
     partition_paths: dict[str, list[Path]] = {
         name: [] for name in output_paths
@@ -745,6 +858,26 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         minimum_coverage=float(
             request.config.data["quality"]["minimum_window_coverage"]
         ),
+        two_week_release_dates=two_week_release_dates,
+        two_week_values=two_week_values,
+        two_week_accumulation_days=int(
+            spei_config["two_week_accumulation_days"]
+        ),
+        two_week_state_days=int(spei_config["two_week_state_days"]),
+        two_week_accumulation_timestamp_position=str(
+            spei_config["two_week_accumulation_timestamp_position"]
+        ),
+        two_week_state_timestamp_position=str(
+            spei_config["two_week_state_timestamp_position"]
+        ),
+        two_week_event_specs=(
+            two_week_event_specs
+            if two_week_event_specs is not None
+            else {
+                "k10_main": (-1.0, 1),
+                "k15_strict": (-1.5, 3),
+            }
+        ),
     )
     range_position = {value: index for index, value in enumerate(ranges)}
     for block in generated:
@@ -758,8 +891,11 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         }
         for name, raw_frame in frames.items():
             frame = raw_frame
-            if name in {"events", "event_bridge"} and frame.empty and "event_id" not in frame:
-                frame = pd.DataFrame({"event_id": pd.Series(dtype="string")})
+            if name in {"events", "event_bridge"} and frame.empty:
+                if "event_id" not in frame:
+                    frame["event_id"] = pd.Series(dtype="string")
+                if "timescale" not in frame:
+                    frame["timescale"] = pd.Series(dtype="string")
             path = partition_paths[name][position]
             expected_rows = len(frame)
             valid, _existing_rows = parquet_partition_contract(
@@ -817,7 +953,12 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
                     raise FileExistsError(target)
                 _archive_incomplete(target)
             empty_frame = (
-                pd.DataFrame({"event_id": pd.Series(dtype="string")})
+                pd.DataFrame(
+                    {
+                        "event_id": pd.Series(dtype="string"),
+                        "timescale": pd.Series(dtype="string"),
+                    }
+                )
                 if name in {"events", "event_bridge"}
                 else None
             )
@@ -841,6 +982,8 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         "events": event_audit_path,
         "event_bridge": event_bridge_path,
     }
+    if two_week_caches is not None:
+        artifacts["spei_2w_cache"] = two_week_caches.root
 
     if not request.scope.is_pilot:
         v3, grid_name = _read_v3_legacy_projection(
@@ -868,23 +1011,73 @@ def _handle_spei(request: StageRequest) -> StageOutcome:
         artifacts["legacy_v3_exact"] = legacy_path
         row_counts["legacy_rows"] = len(legacy)
 
-    semantics = str(
-        request.config.data["spei"].get(
-            "two_week_timestamp_semantics", "unresolved"
+    import pyarrow.parquet as pq
+
+    event_long_schema = pq.ParquetFile(event_long_path).schema_arrow.names
+    two_week_fields = [
+        name for name in event_long_schema if name.startswith("chm_spei_2w_")
+    ]
+    if two_week_enabled and not two_week_fields:
+        raise StageValidationError("SPEI event long output lacks 2W canonical fields")
+    if not two_week_enabled and two_week_fields:
+        raise StageValidationError(
+            "PARTIAL_SCOPE SPEI output must not contain 2W canonical fields"
         )
+
+    count_scan_batch_size = 65_536
+    two_week_event_rows, event_scan_max = _count_parquet_value_batched(
+        event_audit_path,
+        column="timescale",
+        value="2W",
+        batch_size=count_scan_batch_size,
+    )
+    two_week_bridge_rows, bridge_scan_max = _count_parquet_value_batched(
+        event_bridge_path,
+        column="timescale",
+        value="2W",
+        batch_size=count_scan_batch_size,
+    )
+    semantics = str(spei_config["two_week_timestamp_semantics"])
+    audit_dates = tuple(two_week_release_dates or ())
+    audit_values = (
+        np.asarray(two_week_values[:, 0], dtype=float)
+        if two_week_values is not None
+        else np.asarray([], dtype=float)
     )
     _records, audit = prepare_two_week_records(
-        [],
-        [],
+        audit_dates,
+        audit_values,
         config_semantics=semantics,
-        timestamp_position=None,
-        state_days=None,
+        endpoint_decision_status=endpoint_status,
+        accumulation_timestamp_position=str(
+            spei_config["two_week_accumulation_timestamp_position"]
+        ),
+        state_timestamp_position=str(
+            spei_config["two_week_state_timestamp_position"]
+        ),
+        accumulation_days=int(spei_config["two_week_accumulation_days"]),
+        state_days=int(spei_config["two_week_state_days"]),
+        primary_threshold=float(spei_config["two_week_primary_threshold"]),
+        primary_min_units=int(spei_config["two_week_primary_min_units"]),
+        strict_threshold=float(spei_config["two_week_strict_threshold"]),
+        strict_min_units=int(spei_config["two_week_strict_min_units"]),
+        cell_count=(int(two_week_values.shape[1]) if two_week_values is not None else 0),
+        canonical_field_count=len(two_week_fields),
+        event_rows=two_week_event_rows,
+        bridge_rows=two_week_bridge_rows,
+        count_scan_batch_size=count_scan_batch_size,
+        event_count_scan_max_batch_rows=event_scan_max,
+        bridge_count_scan_max_batch_rows=bridge_scan_max,
     )
     audit_target = request.work_dir / "spei_2w_audit.json"
     if request.pipeline.resume and audit_target.exists():
         _archive_incomplete(audit_target)
     audit_path = write_two_week_audit(audit_target, audit)
     artifacts["spei_2w_audit"] = audit_path
+    row_counts["spei_2w_releases"] = len(audit_dates)
+    row_counts["spei_2w_cells"] = (
+        int(two_week_values.shape[1]) if two_week_values is not None else 0
+    )
     return StageOutcome(
         artifacts=artifacts,
         row_counts=row_counts,
@@ -3565,6 +3758,99 @@ def _handle_export(request: StageRequest) -> StageOutcome:
         inventory_parquet,
         require_full_hash=not request.scope.is_pilot,
     )
+    spei_2w_audit_path = _stage_file(
+        request.context, "spei", "spei_2w_audit.json"
+    )
+    spei_2w_audit = json.loads(
+        spei_2w_audit_path.read_text(encoding="utf-8")
+    )
+    spei_2w_numeric_executed = bool(
+        spei_2w_audit.get("numeric_executed", False)
+    )
+    full_scope = request.context.completion_scope_status == "FULL_SCOPE"
+    required_positive_2w = (
+        "release_count",
+        "cell_count",
+        "canonical_field_count",
+    )
+    if full_scope:
+        if (
+            spei_2w_audit.get("status") != "EXECUTED"
+            or not spei_2w_numeric_executed
+            or any(
+                int(spei_2w_audit.get(name, 0)) <= 0
+                for name in required_positive_2w
+            )
+        ):
+            raise StageValidationError(
+                "Full-scope export requires executed SPEI-2W stage evidence"
+            )
+    elif (
+        spei_2w_audit.get("status") != SPEI_2W_PENDING_STATUS
+        or spei_2w_numeric_executed
+        or any(
+            int(spei_2w_audit.get(name, -1)) != 0
+            for name in (
+                "release_count",
+                "cell_count",
+                "canonical_field_count",
+                "event_rows",
+                "bridge_rows",
+            )
+        )
+    ):
+        raise StageValidationError(
+            "Partial-scope export requires skipped zero-output SPEI-2W evidence"
+        )
+    frozen_2w = request.config.data["spei"]
+    expected_2w_audit = {
+        "endpoint_decision_status": frozen_2w[
+            "two_week_endpoint_decision_status"
+        ],
+        "config_semantics": frozen_2w["two_week_timestamp_semantics"],
+        "accumulation_timestamp_position": frozen_2w[
+            "two_week_accumulation_timestamp_position"
+        ],
+        "state_timestamp_position": frozen_2w[
+            "two_week_state_timestamp_position"
+        ],
+        "accumulation_days": int(frozen_2w["two_week_accumulation_days"]),
+        "state_days": int(frozen_2w["two_week_state_days"]),
+        "primary_threshold": float(frozen_2w["two_week_primary_threshold"]),
+        "primary_min_units": int(frozen_2w["two_week_primary_min_units"]),
+        "strict_threshold": float(frozen_2w["two_week_strict_threshold"]),
+        "strict_min_units": int(frozen_2w["two_week_strict_min_units"]),
+    }
+    mismatched_2w = [
+        name
+        for name, expected in expected_2w_audit.items()
+        if spei_2w_audit.get(name) != expected
+    ]
+    if mismatched_2w:
+        raise StageValidationError(
+            f"SPEI-2W audit differs from frozen config: {mismatched_2w}"
+        )
+    spei_event_source = _stage_file(
+        request.context, "spei", "chm_spei_events.parquet"
+    )
+    spei_bridge_source = _stage_file(
+        request.context, "spei", "chm_spei_event_window_bridge.parquet"
+    )
+    observed_2w_events, observed_2w_bridges, _event_max, _bridge_max = (
+        _validate_spei_2w_event_row_counts(
+            spei_2w_audit,
+            spei_event_source,
+            spei_bridge_source,
+        )
+    )
+    spei_2w_output_included = bool(
+        request.config.data["scope"]["spei_2w_output"]
+        and spei_2w_numeric_executed
+    )
+    if full_scope != spei_2w_output_included:
+        raise StageValidationError(
+            "SPEI-2W output inclusion differs from the configured scope"
+        )
     audit_artifacts: dict[str, Path] = {
         "source_inventory_json": _stage_file(
             request.context,
@@ -3681,7 +3967,12 @@ def _handle_export(request: StageRequest) -> StageOutcome:
         },
         transformations={
             "temperature": "ERA5 hourly to UTC+8 daily and six clipped phenology windows",
-            "spei": "CHM native SPEI manual and dynamic-extension interfaces",
+            "spei": (
+                "CHM native monthly SPEI plus confirmed 2W trailing-14-day "
+                "releases mapped to forward 7-day event states"
+                if full_scope
+                else "CHM native monthly SPEI; development-candidate 2W numerics excluded"
+            ),
             "soil_moisture": "GLEAM 4.3a daily and fixed calendar-pentad metrics",
             "events": "complete-sequence detection with event-window audit bridges",
         },
@@ -3700,7 +3991,6 @@ def _handle_export(request: StageRequest) -> StageOutcome:
             "precipitation dry days, CDD, and VPD",
             "fixed hot-without-rain events",
             "yield/SR-dependent splines, response surfaces, and predictions",
-            "SPEI-2W numerics while timestamp semantics remain unresolved",
         ),
         compression=str(request.config.data["output"].get("compression", "zstd")),
         row_group_size=int(
@@ -3712,6 +4002,11 @@ def _handle_export(request: StageRequest) -> StageOutcome:
             request.config.data["output"].get("netcdf_complevel", 4)
         ),
         published_output_directory=Path("stages") / "export" / "bundle",
+        scope_id=request.context.scope_profile,
+        scope_status=request.context.completion_scope_status,
+        spei_2w_numeric_executed=spei_2w_numeric_executed,
+        spei_2w_output_included=spei_2w_output_included,
+        spei_2w_evidence=spei_2w_audit,
     )
     artifacts = {
         name: getattr(paths, name) for name in paths.__dataclass_fields__
@@ -3729,6 +4024,8 @@ def _handle_export(request: StageRequest) -> StageOutcome:
         extra={
             "bundle_directory": "bundle",
             "streaming_contract": export_report["streaming_contract"],
+            "spei_2w_numeric_executed": spei_2w_numeric_executed,
+            "spei_2w_output_included": spei_2w_output_included,
         },
     )
 
@@ -4333,6 +4630,134 @@ def _handle_validate(request: StageRequest) -> StageOutcome:
             "manifest_outputs": len(published_outputs),
             "manifest_audits": len(published_audits),
             "failures": manifest_link_failures,
+        }
+        spei_2w_failures: list[str] = []
+        spei_audit_path = _stage_file(
+            request.context, "spei", "spei_2w_audit.json"
+        )
+        spei_audit = json.loads(spei_audit_path.read_text(encoding="utf-8"))
+        spei_marker = json.loads(
+            (
+                request.context.stages_dir / "spei" / "_SUCCESS.json"
+            ).read_text(encoding="utf-8")
+        )
+        output_contract = json.loads(
+            (bundle / "output_contract.json").read_text(encoding="utf-8")
+        )
+        passport = json.loads(
+            (bundle / "material_passport.json").read_text(encoding="utf-8")
+        )
+        output_2w = output_contract.get("spei_2w", {})
+        marker_2w = spei_marker.get("extra", {}).get("spei_2w", {})
+        manifest_2w = bundle_manifest.get("metadata", {}).get(
+            "spei_2w_stage_evidence", {}
+        )
+        full_scope = request.context.completion_scope_status == "FULL_SCOPE"
+        if full_scope:
+            if not (
+                spei_audit.get("status") == "EXECUTED"
+                and spei_audit.get("numeric_executed") is True
+                and spei_audit.get("endpoint_decision_status") == "CONFIRMED"
+                and all(
+                    int(spei_audit.get(name, 0)) > 0
+                    for name in (
+                        "release_count",
+                        "cell_count",
+                        "canonical_field_count",
+                    )
+                )
+            ):
+                spei_2w_failures.append("SPEI-2W full-scope audit is incomplete")
+        elif not (
+            spei_audit.get("status") == SPEI_2W_PENDING_STATUS
+            and spei_audit.get("numeric_executed") is False
+            and spei_audit.get("endpoint_decision_status")
+            == "PENDING_USER_DECISION"
+            and all(
+                int(spei_audit.get(name, -1)) == 0
+                for name in (
+                    "release_count",
+                    "cell_count",
+                    "canonical_field_count",
+                    "event_rows",
+                    "bridge_rows",
+                )
+            )
+        ):
+            spei_2w_failures.append("SPEI-2W partial-scope audit is not disabled")
+        if marker_2w != spei_audit:
+            spei_2w_failures.append("SPEI-2W stage marker differs from audit")
+        if output_2w.get("stage_evidence") != spei_audit:
+            spei_2w_failures.append("SPEI-2W output contract differs from audit")
+        if manifest_2w != spei_audit:
+            spei_2w_failures.append("SPEI-2W manifest evidence differs from audit")
+        if passport.get("spei_2w_stage_evidence") != spei_audit:
+            spei_2w_failures.append("SPEI-2W Material Passport differs from audit")
+        expected_output_flag = full_scope
+        if not (
+            output_2w.get("numeric_executed") is expected_output_flag
+            and output_2w.get("output_included") is expected_output_flag
+        ):
+            spei_2w_failures.append("SPEI-2W output flags differ from scope")
+        import netCDF4 as nc
+        import pyarrow.parquet as pq
+
+        canonical_2w_fields = [
+            name
+            for name in pq.ParquetFile(long_path).schema_arrow.names
+            if name.startswith("chm_spei_2w_")
+        ]
+        if len(canonical_2w_fields) != int(
+            spei_audit.get("canonical_field_count", -1)
+        ):
+            spei_2w_failures.append("SPEI-2W canonical field count differs")
+        if not full_scope and canonical_2w_fields:
+            spei_2w_failures.append("PARTIAL_SCOPE contains SPEI-2W fields")
+        observed_events, _event_batch = _count_parquet_value_batched(
+            _stage_file(request.context, "spei", "chm_spei_events.parquet"),
+            column="timescale",
+            value="2W",
+        )
+        observed_bridges, _bridge_batch = _count_parquet_value_batched(
+            _stage_file(
+                request.context,
+                "spei",
+                "chm_spei_event_window_bridge.parquet",
+            ),
+            column="timescale",
+            value="2W",
+        )
+        if observed_events != int(spei_audit.get("event_rows", -1)):
+            spei_2w_failures.append("SPEI-2W event row count differs")
+        if observed_bridges != int(spei_audit.get("bridge_rows", -1)):
+            spei_2w_failures.append("SPEI-2W bridge row count differs")
+        dictionary = pd.read_csv(
+            bundle / "variable_dictionary.csv", encoding="utf-8-sig"
+        )
+        if set(dictionary["scope_id"].astype(str)) != {
+            request.context.scope_profile
+        } or set(dictionary["scope_status"].astype(str)) != {
+            request.context.completion_scope_status
+        }:
+            spei_2w_failures.append("Variable dictionary scope metadata differs")
+        with nc.Dataset(netcdf_path) as netcdf_dataset:
+            if (
+                netcdf_dataset.getncattr("output_scope_id")
+                != request.context.scope_profile
+                or netcdf_dataset.getncattr("output_scope_status")
+                != request.context.completion_scope_status
+            ):
+                spei_2w_failures.append("NetCDF scope attributes differ")
+        failures.extend(spei_2w_failures)
+        gates["spei_2w_scope_contract"] = {
+            "status": "FAIL" if spei_2w_failures else "PASS",
+            "scope_status": request.context.completion_scope_status,
+            "release_count": int(spei_audit.get("release_count", 0)),
+            "cell_count": int(spei_audit.get("cell_count", 0)),
+            "canonical_field_count": len(canonical_2w_fields),
+            "event_rows": observed_events,
+            "bridge_rows": observed_bridges,
+            "failures": spei_2w_failures,
         }
         utc_gate, utc_artifacts, utc_failures = _run_utc_validation(
             request, validation_crosswalk
@@ -5117,6 +5542,21 @@ class ClimateStressPipeline:
             / "quality_summaries"
             / f"run_quality_summary.{self.invocation_id}.json"
         )
+        spei_audit_path = self.context.stages_dir / "spei" / "spei_2w_audit.json"
+        spei_audit = (
+            json.loads(spei_audit_path.read_text(encoding="utf-8"))
+            if spei_audit_path.is_file()
+            else {}
+        )
+        output_contract_path = (
+            self.context.stages_dir / "export" / "bundle" / "output_contract.json"
+        )
+        output_contract = (
+            json.loads(output_contract_path.read_text(encoding="utf-8"))
+            if output_contract_path.is_file()
+            else {}
+        )
+        output_2w = output_contract.get("spei_2w", {})
         payload = {
             "schema_version": 1,
             "invocation_id": self.invocation_id,
@@ -5126,9 +5566,21 @@ class ClimateStressPipeline:
             "status": self.context.completion_scope_status,
             "scope_profile": self.context.scope_profile,
             "completion_scope_status": self.context.completion_scope_status,
-            "spei_2w_numeric": False,
-            "spei_2w_output": False,
-            "compound_mode": "dual_independent_severity",
+            "spei_2w_numeric_enabled": bool(
+                self.config.data["scope"]["spei_2w_numeric"]
+            ),
+            "spei_2w_output_enabled": bool(
+                self.config.data["scope"]["spei_2w_output"]
+            ),
+            "spei_2w_numeric_executed": bool(
+                spei_audit.get("numeric_executed", False)
+            ),
+            "spei_2w_output_included": bool(
+                output_2w.get("output_included", False)
+            ),
+            "compound_mode": str(
+                self.config.data["scope"]["compound_mode"]
+            ),
             "created_at_utc": utc_now(),
             "config_sha256": self.config.sha256,
             "template_config_sha256": (

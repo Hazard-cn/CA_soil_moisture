@@ -22,11 +22,13 @@ from climate_stress.pipeline import (  # noqa: E402
     ClimateStressPipeline,
     ExecutionScope,
     StageOutcome,
+    StageValidationError,
     _add_hot_flash_window_metrics,
     _contiguous_year_groups,
     _event_partition_years,
     _read_v3_legacy_projection,
     _read_v3_validation_projection,
+    _validate_spei_2w_event_row_counts,
     build_parser,
     default_handlers,
     dependency_closure,
@@ -88,6 +90,46 @@ def test_year_parser_supports_lists_and_inclusive_ranges() -> None:
         parse_years("2014-2012")
     with pytest.raises(Exception):
         parse_years("2010,2010")
+
+
+def test_two_week_event_count_audit_is_bounded_and_rejects_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tmp_path / "events.parquet"
+    bridges = tmp_path / "bridges.parquet"
+    timescales = ["2W" if index % 3 == 0 else "1M" for index in range(101)]
+    pd.DataFrame({"timescale": timescales}).to_parquet(events, index=False)
+    pd.DataFrame({"timescale": timescales[:40]}).to_parquet(bridges, index=False)
+    monkeypatch.setattr(
+        pd,
+        "read_parquet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bounded audit must not call pandas.read_parquet")
+        ),
+    )
+    observed = _validate_spei_2w_event_row_counts(
+        {"event_rows": 34, "bridge_rows": 14},
+        events,
+        bridges,
+        batch_size=13,
+    )
+    assert observed[:2] == (34, 14)
+    assert observed[2] <= 13 and observed[3] <= 13
+    with pytest.raises(StageValidationError, match="event rows differ"):
+        _validate_spei_2w_event_row_counts(
+            {"event_rows": 33, "bridge_rows": 14},
+            events,
+            bridges,
+            batch_size=13,
+        )
+    with pytest.raises(StageValidationError, match="bridge rows differ"):
+        _validate_spei_2w_event_row_counts(
+            {"event_rows": 34, "bridge_rows": 13},
+            events,
+            bridges,
+            batch_size=13,
+        )
 
 
 def test_cli_parser_exposes_all_frozen_arguments() -> None:
@@ -1269,12 +1311,15 @@ def test_gleam_partition_reader_never_requests_all_cell_columns(
     assert values.tolist() == [[0.2, 0.3], [0.6, 0.7]]
 
 
-def write_integration_config(tmp_path: Path) -> Path:
+def write_integration_config(tmp_path: Path, *, full_scope: bool = False) -> Path:
     path = tmp_path / "integration-config.yaml"
     data = {
         "version_id": "data-climate-stress-2010-2019-v1-test",
         "inputs": {
             "v3_main": str(tmp_path / "unused-v3.parquet"),
+            "spei_monthly_pattern": str(
+                tmp_path / "missing-monthly" / "SPEI-{scale}.nc"
+            ),
         },
         "output": {
             "root": str(tmp_path / "integration-output"),
@@ -1309,6 +1354,7 @@ def write_integration_config(tmp_path: Path) -> Path:
             "heatwave_min_days": 3,
             "minimum_history_fraction": 0.90,
         },
+        "spei": {"minimum_valid_neighbors": 2},
         "gleam": {
             "layers": {"SMrz": "primary"},
             "daily_p10_calendar_half_width_days": 2,
@@ -1332,6 +1378,16 @@ def write_integration_config(tmp_path: Path) -> Path:
         },
     }
     data = complete_frozen_v1_fixture(data, tmp_path)
+    if full_scope:
+        data["spei"]["two_week_endpoint_decision_status"] = "CONFIRMED"
+        data["scope"].update(
+            {
+                "profile": "full-spei2w-dual-severity",
+                "completion_scope_status": "FULL_SCOPE",
+                "spei_2w_numeric": True,
+                "spei_2w_output": True,
+            }
+        )
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return path
 
@@ -1506,6 +1562,8 @@ class SyntheticClimateStages:
         return StageOutcome(artifacts={"thresholds": root}, row_counts={"files": files})
 
     def spei(self, request) -> StageOutcome:
+        from climate_stress.spei import prepare_two_week_records
+
         windows = tuple(request.config.windows)
         cell_ids = self._crosswalk()["era01_cell_id"].astype("int64").tolist()
         rows = [(cell_id, window) for cell_id in cell_ids for window in windows]
@@ -1522,6 +1580,9 @@ class SyntheticClimateStages:
         dynamic["chm_spei_dynamic_ext_value"] = -0.3
         event_long = manual[["era01_cell_id", "year", "window"]].copy()
         event_long["chm_spei_s1_k10_main_count"] = 0.0
+        full_scope = request.config.completion_scope_status == "FULL_SCOPE"
+        if full_scope:
+            event_long["chm_spei_2w_k10_main_count"] = 0.0
         manual_path = request.work_dir / "chm_spei_manual.parquet"
         dynamic_path = request.work_dir / "chm_spei_dynamic_ext.parquet"
         event_long_path = request.work_dir / "chm_spei_event_window_long.parquet"
@@ -1533,16 +1594,54 @@ class SyntheticClimateStages:
             '{"synthetic":true}', encoding="utf-8"
         )
         two_week_path = request.work_dir / "spei_2w_audit.json"
+        spei_config = request.config.data["spei"]
+        audit_dates = (
+            [date(2019, 1, 1), date(2019, 1, 8)] if full_scope else []
+        )
+        audit_values = [-0.5, -0.4] if full_scope else []
+        _records, two_week_audit = prepare_two_week_records(
+            audit_dates,
+            audit_values,
+            config_semantics=str(spei_config["two_week_timestamp_semantics"]),
+            endpoint_decision_status=str(
+                spei_config["two_week_endpoint_decision_status"]
+            ),
+            accumulation_timestamp_position=str(
+                spei_config["two_week_accumulation_timestamp_position"]
+            ),
+            state_timestamp_position=str(
+                spei_config["two_week_state_timestamp_position"]
+            ),
+            accumulation_days=int(spei_config["two_week_accumulation_days"]),
+            state_days=int(spei_config["two_week_state_days"]),
+            primary_threshold=float(spei_config["two_week_primary_threshold"]),
+            primary_min_units=int(spei_config["two_week_primary_min_units"]),
+            strict_threshold=float(spei_config["two_week_strict_threshold"]),
+            strict_min_units=int(spei_config["two_week_strict_min_units"]),
+            cell_count=1 if full_scope else 0,
+            canonical_field_count=1 if full_scope else 0,
+        )
+        two_week_payload = two_week_audit.as_dict()
         two_week_path.write_text(
-            '{"numeric_executed":false,"status":"blocked"}', encoding="utf-8"
+            json.dumps(two_week_payload, sort_keys=True), encoding="utf-8"
         )
         manual.to_parquet(manual_path, index=False)
         dynamic.to_parquet(dynamic_path, index=False)
         event_long.to_parquet(event_long_path, index=False)
-        pd.DataFrame({"event_id": pd.Series(dtype="string")}).to_parquet(
+        pd.DataFrame(
+            {
+                "event_id": pd.Series(dtype="string"),
+                "timescale": pd.Series(dtype="string"),
+            }
+        ).to_parquet(
             event_path, index=False
         )
-        pd.DataFrame({"event_id": pd.Series(dtype="string")}).to_parquet(
+        pd.DataFrame(
+            {
+                "event_id": pd.Series(dtype="string"),
+                "timescale": pd.Series(dtype="string"),
+            }
+        ).to_parquet(
             bridge_path, index=False
         )
         return StageOutcome(
@@ -1560,6 +1659,7 @@ class SyntheticClimateStages:
                 "dynamic_rows": len(dynamic),
                 "event_long_rows": len(event_long),
             },
+            extra={"spei_2w": two_week_payload},
         )
 
     def gleam_daily(self, request) -> StageOutcome:
@@ -2169,3 +2269,182 @@ def test_cli_real_stage_chain_consumes_and_publishes_each_contract(
     } == {
         str(path): sha256_file(second_run_dir / path) for path in relative_files
     }
+
+
+def test_confirmed_full_scope_fixture_publishes_and_validates_2w_contract(
+    tmp_path: Path,
+) -> None:
+    config_path = write_integration_config(tmp_path, full_scope=True)
+    handlers = default_handlers()
+    handlers.update(SyntheticClimateStages().mapping())
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "--stage",
+            "all",
+            "--run-id",
+            "synthetic-full-scope",
+            "--pilot-cells",
+            "1",
+            "--years",
+            "2019",
+            "--hash-mode",
+            "pilot",
+        ],
+        handlers=handlers,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == 0, stderr.getvalue()
+    payload = json.loads(stdout.getvalue())
+    run_dir = Path(payload["run_dir"])
+    bundle = run_dir / "stages" / "export" / "bundle"
+    long = pd.read_parquet(bundle / "climate_stress_long.parquet")
+    assert "chm_spei_2w_k10_main_count" in long
+    validation = json.loads(
+        (run_dir / "stages" / "validate" / "validation_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert validation["validation_status"] == "PASS"
+    assert validation["completion_scope_status"] == "FULL_SCOPE"
+    assert validation["scope_profile"] == "full-spei2w-dual-severity"
+    assert validation["spei_2w_numeric"] is True
+    assert validation["spei_2w_output"] is True
+    assert validation["gates"]["spei_2w_scope_contract"]["status"] == "PASS"
+    contract = json.loads(
+        (bundle / "output_contract.json").read_text(encoding="utf-8")
+    )
+    assert contract["status"] == "FULL_SCOPE"
+    assert contract["spei_2w"]["numeric_executed"] is True
+    assert contract["spei_2w"]["output_included"] is True
+    assert contract["spei_2w"]["stage_evidence"]["status"] == "EXECUTED"
+
+
+def test_partial_scope_real_spei_skips_missing_2w_and_completes_export_validate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.spei as spei_module
+    from climate_stress.core import SPEI_2W_PENDING_STATUS
+    from climate_stress.spei import SpeiCachePaths
+
+    config_path = write_integration_config(tmp_path)
+    config = load_config(config_path)
+    assert "spei_2w" not in config.data["inputs"]
+
+    def fake_monthly_cache(
+        _pattern,
+        _target_latitude,
+        _target_longitude,
+        output_root,
+        **_kwargs,
+    ) -> SpeiCachePaths:
+        root = Path(output_root)
+        root.mkdir(parents=True, exist_ok=True)
+        target_codes = np.asarray(
+            [201900 + month for month in range(1, 13)], dtype=np.int32
+        )
+        full_codes = np.asarray(
+            [
+                year * 100 + month
+                for year in range(2016, 2021)
+                for month in range(1, 13)
+            ],
+            dtype=np.int32,
+        )
+        target_codes_path = root / "target_month_codes.npy"
+        full_codes_path = root / "full_month_codes.npy"
+        np.save(target_codes_path, target_codes)
+        np.save(full_codes_path, full_codes)
+        target_paths: dict[int, Path] = {}
+        for scale in range(1, 13):
+            path = root / f"target-scale-{scale:02d}.npy"
+            np.save(path, np.full((len(target_codes), 1), -0.5))
+            target_paths[scale] = path
+        full_paths: dict[int, Path] = {}
+        for scale in (1, 3):
+            path = root / f"full-scale-{scale:02d}.npy"
+            np.save(path, np.full((len(full_codes), 1), -0.5))
+            full_paths[scale] = path
+        mapping = root / "mapping.npz"
+        np.savez(mapping, synthetic=np.asarray([1], dtype=np.int8))
+        metadata = root / "metadata.json"
+        metadata.write_text('{"synthetic":true}', encoding="utf-8")
+        return SpeiCachePaths(
+            root=root,
+            mapping=mapping,
+            target_month_codes=target_codes_path,
+            full_month_codes=full_codes_path,
+            target_nearest=target_paths,
+            full_manual=full_paths,
+            metadata=metadata,
+        )
+
+    monkeypatch.setattr(spei_module, "build_spei_caches", fake_monthly_cache)
+    monkeypatch.setattr(
+        spei_module,
+        "build_two_week_cache",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("PARTIAL_SCOPE must not open the SPEI-2W source")
+        ),
+    )
+    handlers = default_handlers()
+    synthetic = SyntheticClimateStages().mapping()
+    synthetic.pop("spei")
+    handlers.update(synthetic)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "--stage",
+            "all",
+            "--run-id",
+            "partial-real-spei",
+            "--pilot-cells",
+            "1",
+            "--years",
+            "2019",
+            "--hash-mode",
+            "pilot",
+        ],
+        handlers=handlers,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == 0, stderr.getvalue()
+    run_dir = Path(json.loads(stdout.getvalue())["run_dir"])
+    audit = json.loads(
+        (run_dir / "stages" / "spei" / "spei_2w_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == SPEI_2W_PENDING_STATUS
+    assert audit["numeric_executed"] is False
+    assert all(
+        audit[name] == 0
+        for name in (
+            "release_count",
+            "cell_count",
+            "canonical_field_count",
+            "event_rows",
+            "bridge_rows",
+        )
+    )
+    long = pd.read_parquet(
+        run_dir / "stages" / "export" / "bundle" / "climate_stress_long.parquet"
+    )
+    assert not any(name.startswith("chm_spei_2w_") for name in long.columns)
+    validation = json.loads(
+        (run_dir / "stages" / "validate" / "validation_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert validation["validation_status"] == "PASS"
+    assert validation["completion_scope_status"] == "PARTIAL_SCOPE"
+    assert validation["gates"]["spei_2w_scope_contract"]["status"] == "PASS"

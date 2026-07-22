@@ -20,6 +20,7 @@ from climate_stress.export import (  # noqa: E402
     build_material_passport,
     build_stata_alias_map,
     build_variable_dictionary,
+    export_panel_bundle,
     export_panel_bundle_streaming,
     generate_variable_metadata,
     manifest_input_records_from_inventory,
@@ -33,6 +34,7 @@ from climate_stress.export import (  # noqa: E402
     write_variable_dictionary,
 )
 from climate_stress.grid import build_v3_crosswalk  # noqa: E402
+from climate_stress.core import SPEI_2W_PENDING_STATUS  # noqa: E402
 from climate_stress.validate import (  # noqa: E402
     PanelValidationError,
     validate_cf_netcdf,
@@ -49,6 +51,44 @@ from climate_stress.validate import (  # noqa: E402
 
 
 YEARS = tuple(range(2010, 2020))
+PARTIAL_SCOPE_ID = "non2w-dual-severity"
+PARTIAL_SCOPE_STATUS = "PARTIAL_SCOPE"
+FULL_SCOPE_ID = "full-spei2w-dual-severity"
+FULL_SCOPE_STATUS = "FULL_SCOPE"
+
+
+def _partial_2w_evidence() -> dict[str, object]:
+    return {
+        "status": SPEI_2W_PENDING_STATUS,
+        "numeric_executed": False,
+        "endpoint_decision_status": "PENDING_USER_DECISION",
+        "release_count": 0,
+        "cell_count": 0,
+        "canonical_field_count": 0,
+        "event_rows": 0,
+        "bridge_rows": 0,
+        "accumulation_support": (
+            "development_candidate: [label-13 days, label] inclusive"
+        ),
+        "event_state_support": (
+            "development_candidate: [label, label+6 days] inclusive"
+        ),
+    }
+
+
+def _full_2w_evidence(*, field_count: int = 1) -> dict[str, object]:
+    return {
+        "status": "EXECUTED",
+        "numeric_executed": True,
+        "endpoint_decision_status": "CONFIRMED",
+        "release_count": 4,
+        "cell_count": 2,
+        "canonical_field_count": field_count,
+        "event_rows": 0,
+        "bridge_rows": 0,
+        "accumulation_support": "confirmed: [label-13 days, label] inclusive",
+        "event_state_support": "confirmed: [label, label+6 days] inclusive",
+    }
 
 
 def _crosswalk() -> pd.DataFrame:
@@ -141,6 +181,8 @@ def test_cf_netcdf_fixed_dimensions_mask_and_roundtrip(tmp_path: Path) -> None:
         years=YEARS,
         windows=CANONICAL_WINDOWS,
         expected_rows=120,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     crosswalk = long[
         [
@@ -196,6 +238,8 @@ def test_cf_netcdf_fixed_dimensions_mask_and_roundtrip(tmp_path: Path) -> None:
         years=YEARS,
         windows=CANONICAL_WINDOWS,
         expected_rows=120,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     assert sha256_file(path) == sha256_file(repeated)
 
@@ -292,6 +336,8 @@ def test_dictionary_passport_and_manifest_hashes(tmp_path: Path) -> None:
                 "history_period": "1981-2010",
             }
         },
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     metric = dictionary.set_index("variable").loc["era5u8_tmean"]
     assert metric["unit"] == "degC"
@@ -306,6 +352,10 @@ def test_dictionary_passport_and_manifest_hashes(tmp_path: Path) -> None:
         long,
         version_id="test-version",
         sources={"era5": "synthetic"},
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
+        spei_2w_numeric_executed=False,
+        spei_2w_output_included=False,
     )
     passport_path = write_json_exclusive(passport, tmp_path / "passport.json")
     config_path = tmp_path / "config.yaml"
@@ -326,7 +376,11 @@ def test_dictionary_passport_and_manifest_hashes(tmp_path: Path) -> None:
 
 def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> None:
     long = _long_panel()
-    metadata = generate_variable_metadata(long.columns)
+    metadata = generate_variable_metadata(
+        long.columns,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
+    )
     required = {
         "long_name",
         "units",
@@ -362,6 +416,8 @@ def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> N
             "compound_smrz_hot_p10_sensitivity_gap2_count",
         ],
         gleam_layer_roles={"SMrz": "primary", "SMs": "supplementary"},
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     assert source_metadata["chm_spei_s1_valid_days"]["units"] == "day"
     assert source_metadata["chm_spei_s1_event_expected_days"]["units"] == "day"
@@ -388,6 +444,8 @@ def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> N
     overridden = generate_variable_metadata(
         ["chm_spei_s1_mean"],
         source_overrides={"chm_spei_": {"reference_id": "custom-source"}},
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     assert overridden["chm_spei_s1_mean"]["reference_id"] == "custom-source"
 
@@ -400,7 +458,9 @@ def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> N
             "gleam43a_smrz_p10_event_sensitivity_gap2_total_duration_days",
             "compound_smrz_hot_p10_main_gap0_total_duration_days",
             "compound_smrz_hot_p10_sensitivity_gap2_total_duration_days",
-        ]
+        ],
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     heatwave = event_metadata["era5u8_hw_p90_total_duration_days"]
     assert heatwave["minimum_duration"] == "3 consecutive valid days"
@@ -506,6 +566,8 @@ def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) ->
         years=YEARS,
         windows=CANONICAL_WINDOWS,
         expected_rows=120,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     dta, aliases, _, _ = write_stata_bundle(
         wide,
@@ -557,6 +619,8 @@ def test_netcdf_rejects_any_nonselected_value(tmp_path: Path) -> None:
         years=YEARS,
         windows=CANONICAL_WINDOWS,
         expected_rows=120,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
     )
     with nc.Dataset(path, "r+") as dataset:
         dataset.variables["era5u8_tmean"][9, 5, 375, 615] = 1.0
@@ -586,6 +650,10 @@ def _streaming_bundle(
     tmp_path: Path,
     partition_root: Path,
     output_name: str,
+    *,
+    scope_id: str = PARTIAL_SCOPE_ID,
+    scope_status: str = PARTIAL_SCOPE_STATUS,
+    spei_2w_evidence: dict[str, object] | None = None,
 ) -> tuple[object, dict[str, object]]:
     config = tmp_path / f"{output_name}.yaml"
     raw = tmp_path / f"{output_name}.raw"
@@ -603,6 +671,15 @@ def _streaming_bundle(
         expected_wide_rows=20,
         version_id="streaming-test",
         gleam_layer_roles={"SMrz": "primary", "SMs": "supplementary"},
+        scope_id=scope_id,
+        scope_status=scope_status,
+        spei_2w_numeric_executed=scope_status == FULL_SCOPE_STATUS,
+        spei_2w_output_included=scope_status == FULL_SCOPE_STATUS,
+        spei_2w_evidence=(
+            spei_2w_evidence
+            if spei_2w_evidence is not None
+            else _partial_2w_evidence()
+        ),
     )
 
 
@@ -633,6 +710,10 @@ def test_streaming_bundle_is_block_bounded_and_value_equivalent(
     assert output_contract["status"] == "PARTIAL_SCOPE"
     assert output_contract["spei_2w"]["numeric_executed"] is False
     assert output_contract["spei_2w"]["output_included"] is False
+    assert not any(
+        column.startswith("chm_spei_2w_")
+        for column in pd.read_parquet(paths.long_parquet).columns
+    )
     assert output_contract["compound_severity"]["mixed_unit_scalar_included"] is False
     assert max(
         rows
@@ -719,3 +800,175 @@ def test_streaming_bundle_is_equivalent_across_spatial_block_sizes(
         columns=reverse
     )
     pd.testing.assert_frame_equal(dta_a, dta_b, check_dtype=False)
+
+
+def test_full_scope_streaming_export_requires_and_describes_2w_fields(
+    tmp_path: Path,
+) -> None:
+    long = _long_panel()
+    long["chm_spei_2w_k10_main_count"] = 0.0
+    long["chm_spei_2w_k15_strict_count"] = 0.0
+    long["chm_spei_2w_k10_main_window_total_duration_releases_equiv"] = 0.0
+    long["chm_spei_2w_k10_main_severity_spei_releases"] = 0.0
+    partitions = _partition_long_by_cells(long, tmp_path / "full-parts", 1)
+    evidence = _full_2w_evidence(field_count=4)
+    paths, report = _streaming_bundle(
+        tmp_path,
+        partitions,
+        "full-bundle",
+        scope_id=FULL_SCOPE_ID,
+        scope_status=FULL_SCOPE_STATUS,
+        spei_2w_evidence=evidence,
+    )
+    contract = __import__("json").loads(
+        Path(report["output_contract"]).read_text(encoding="utf-8")
+    )
+    assert contract["scope_id"] == FULL_SCOPE_ID
+    assert contract["status"] == FULL_SCOPE_STATUS
+    assert contract["spei_2w"]["numeric_executed"] is True
+    assert contract["spei_2w"]["output_included"] is True
+    assert contract["spei_2w"]["stage_evidence"] == evidence
+    dictionary = pd.read_csv(paths.variable_dictionary_csv, encoding="utf-8-sig").set_index(
+        "variable"
+    )
+    main = dictionary.loc["chm_spei_2w_k10_main_count"]
+    strict = dictionary.loc["chm_spei_2w_k15_strict_count"]
+    assert main["unit"] == "count"
+    assert "K=-1 primary" in main["threshold_rule"]
+    assert main["minimum_duration"] == "1 observed 7-day release-state unit"
+    assert "K=-1.5 strict" in strict["threshold_rule"]
+    assert strict["minimum_duration"] == "3 consecutive 7-day release-state units"
+    assert "confirmed:" in main["time_window"]
+    assert "[label-13 days, label]" in main["time_window"]
+    assert "[label, label+6 days]" in main["time_window"]
+    assert (
+        dictionary.loc[
+            "chm_spei_2w_k10_main_window_total_duration_releases_equiv",
+            "unit",
+        ]
+        == "7-day state unit equivalent"
+    )
+    assert (
+        dictionary.loc[
+            "chm_spei_2w_k10_main_severity_spei_releases", "unit"
+        ]
+        == "standardized-index release"
+    )
+    with nc.Dataset(paths.netcdf) as dataset:
+        assert dataset.getncattr("output_scope_id") == FULL_SCOPE_ID
+        assert dataset.getncattr("output_scope_status") == FULL_SCOPE_STATUS
+    manifest = __import__("json").loads(paths.manifest.read_text(encoding="utf-8"))
+    assert manifest["metadata"]["spei_2w_stage_evidence"] == evidence
+
+
+def test_full_scope_export_fails_closed_on_2w_evidence_or_schema_drift(
+    tmp_path: Path,
+) -> None:
+    without_2w = _partition_long_by_cells(
+        _long_panel(), tmp_path / "missing-2w-parts", 1
+    )
+    with pytest.raises(ValueError, match="requires canonical chm_spei_2w"):
+        _streaming_bundle(
+            tmp_path,
+            without_2w,
+            "missing-2w-bundle",
+            scope_id=FULL_SCOPE_ID,
+            scope_status=FULL_SCOPE_STATUS,
+            spei_2w_evidence=_full_2w_evidence(field_count=1),
+        )
+
+    invalid_audit = _full_2w_evidence(field_count=1)
+    invalid_audit.update(
+        {
+            "status": SPEI_2W_PENDING_STATUS,
+            "numeric_executed": False,
+            "endpoint_decision_status": "PENDING_USER_DECISION",
+        }
+    )
+    with pytest.raises(ValueError, match="numeric status differ"):
+        _streaming_bundle(
+            tmp_path,
+            without_2w,
+            "false-audit-bundle",
+            scope_id=FULL_SCOPE_ID,
+            scope_status=FULL_SCOPE_STATUS,
+            spei_2w_evidence=invalid_audit,
+        )
+
+    long = _long_panel()
+    long["chm_spei_2w_k10_main_count"] = 0.0
+    one_field = _partition_long_by_cells(long, tmp_path / "field-drift-parts", 1)
+    with pytest.raises(ValueError, match="field count differs"):
+        _streaming_bundle(
+            tmp_path,
+            one_field,
+            "field-drift-bundle",
+            scope_id=FULL_SCOPE_ID,
+            scope_status=FULL_SCOPE_STATUS,
+            spei_2w_evidence=_full_2w_evidence(field_count=2),
+        )
+
+    with pytest.raises(TypeError):
+        generate_variable_metadata(["chm_spei_2w_k10_main_count"])
+
+
+def test_nonstreaming_export_rejects_partial_leak_and_full_field_drift(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "nonstreaming.yaml"
+    raw = tmp_path / "nonstreaming.raw"
+    config.write_text("version_id: test\n", encoding="utf-8")
+    raw.write_text("synthetic\n", encoding="utf-8")
+    long = _long_panel()
+    long["chm_spei_2w_k10_main_count"] = 0.0
+    with pytest.raises(ValueError, match="field count differs"):
+        export_panel_bundle(
+            long,
+            tmp_path / "partial-leak",
+            config_path=config,
+            inputs={"synthetic": raw},
+            years=YEARS,
+            windows=CANONICAL_WINDOWS,
+            expected_long_rows=120,
+            expected_wide_rows=20,
+            scope_id=PARTIAL_SCOPE_ID,
+            scope_status=PARTIAL_SCOPE_STATUS,
+            spei_2w_numeric_executed=False,
+            spei_2w_output_included=False,
+            spei_2w_evidence=_partial_2w_evidence(),
+        )
+
+    paths, exported_long, _wide = export_panel_bundle(
+        long,
+        tmp_path / "full-match",
+        config_path=config,
+        inputs={"synthetic": raw},
+        years=YEARS,
+        windows=CANONICAL_WINDOWS,
+        expected_long_rows=120,
+        expected_wide_rows=20,
+        scope_id=FULL_SCOPE_ID,
+        scope_status=FULL_SCOPE_STATUS,
+        spei_2w_numeric_executed=True,
+        spei_2w_output_included=True,
+        spei_2w_evidence=_full_2w_evidence(field_count=1),
+    )
+    assert paths.long_parquet.is_file()
+    assert "chm_spei_2w_k10_main_count" in exported_long
+
+    with pytest.raises(ValueError, match="field count differs"):
+        export_panel_bundle(
+            long,
+            tmp_path / "full-mismatch",
+            config_path=config,
+            inputs={"synthetic": raw},
+            years=YEARS,
+            windows=CANONICAL_WINDOWS,
+            expected_long_rows=120,
+            expected_wide_rows=20,
+            scope_id=FULL_SCOPE_ID,
+            scope_status=FULL_SCOPE_STATUS,
+            spei_2w_numeric_executed=True,
+            spei_2w_output_included=True,
+            spei_2w_evidence=_full_2w_evidence(field_count=2),
+        )

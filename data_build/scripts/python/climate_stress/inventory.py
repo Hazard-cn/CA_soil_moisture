@@ -196,14 +196,28 @@ def enumerate_assets(config: PipelineConfig) -> list[AssetSpec]:
                 variable=f"SPEI-{scale}",
             )
         )
+    endpoint_confirmed = (
+        str(data["spei"]["two_week_endpoint_decision_status"])
+        == "CONFIRMED"
+    )
     specs.append(
         AssetSpec(
             asset_id="chm_spei.2w",
             family="spei_2w",
             path=Path(inputs["spei_2w"]),
-            role="native two-week SPEI; event construction disabled",
+            role=(
+                "native trailing-14-day SPEI released every 7 days; "
+                +
+                (
+                    "confirmed run mapping"
+                    if endpoint_confirmed
+                    else "development-candidate run mapping pending endpoint decision"
+                )
+            ),
             variable="SPEI-2W",
-            timestamp_semantics="unresolved",
+            timestamp_semantics=str(
+                data["spei"]["two_week_timestamp_semantics"]
+            ),
         )
     )
 
@@ -524,8 +538,13 @@ def _validate_netcdf_axes(
                 axes.setdefault(spec.family, current_axes)
                 if spec.family == "spei_2w":
                     values = np.asarray(dataset[time_name].values, dtype=float)
-                    if not np.allclose(np.diff(values), 7.0):
-                        raise ValueError("SPEI-2W timestamps are not 7 days apart")
+                    differences = np.diff(values)
+                    if np.any(differences < 7.0) or not np.allclose(
+                        np.mod(differences, 7.0), 0.0
+                    ):
+                        raise ValueError(
+                            "SPEI-2W timestamps overlap or are off the 7-day cadence"
+                        )
         except Exception as exc:  # one record per corrupt header
             errors.append(f"{spec.asset_id}: {type(exc).__name__}: {exc}")
         if spec.family == "era5_hourly":
@@ -639,13 +658,28 @@ def validate_inventory(
     axis_mode: str = "representative",
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
-    missing = records.loc[~records["exists"], "asset_id"].tolist()
+    endpoint_confirmed = (
+        str(config.data["spei"]["two_week_endpoint_decision_status"])
+        == "CONFIRMED"
+    )
+    missing_rows = records.loc[~records["exists"]]
+    scope_limited_missing = (
+        []
+        if endpoint_confirmed
+        else missing_rows.loc[
+            missing_rows["family"] == "spei_2w", "asset_id"
+        ].tolist()
+    )
+    missing = missing_rows.loc[
+        ~missing_rows["asset_id"].isin(scope_limited_missing), "asset_id"
+    ].tolist()
     checks.append(
         _check(
             "assets.present",
             "pass" if not missing else "fail",
             "all configured assets are present" if not missing else "assets are missing",
             missing=missing,
+            scope_limited_missing=scope_limited_missing,
         )
     )
     historical, target = config.historical_years, config.target_years
@@ -775,16 +809,46 @@ def validate_inventory(
             )
         )
 
+    endpoint_status = str(
+        config.data["spei"]["two_week_endpoint_decision_status"]
+    )
+    endpoint_confirmed = endpoint_status == "CONFIRMED"
     checks.append(
         _check(
             "spei_2w.timestamp_semantics",
-            "blocked",
-            "timestamp labels are 7 days apart but 14-day support start/end semantics are unresolved",
-            timestamp_semantics="unresolved",
-            event_construction_allowed=False,
-            blocking_scope="spei_2w_only",
-            numeric_executed=False,
-            excluded_from_output_contract=True,
+            "pass" if endpoint_confirmed else "blocked",
+            (
+                "endpoint convention confirmed for the explicit accumulation/state mapping"
+                if endpoint_confirmed
+                else "forward-state endpoint convention awaits explicit user decision"
+            ),
+            timestamp_semantics=config.data["spei"][
+                "two_week_timestamp_semantics"
+            ],
+            accumulation_timestamp_position=config.data["spei"][
+                "two_week_accumulation_timestamp_position"
+            ],
+            state_timestamp_position=config.data["spei"][
+                "two_week_state_timestamp_position"
+            ],
+            accumulation_days=int(
+                config.data["spei"]["two_week_accumulation_days"]
+            ),
+            state_days=int(config.data["spei"]["two_week_state_days"]),
+            sampling_days=int(
+                config.data["spei"]["two_week_sampling_days"]
+            ),
+            event_construction_allowed=endpoint_confirmed,
+            endpoint_decision_status=endpoint_status,
+            decision_basis=(
+                "explicit_user_confirmation"
+                if endpoint_confirmed
+                else "development_candidate_only"
+            ),
+            blocking_scope="none" if endpoint_confirmed else "spei_2w_only",
+            numeric_executed_by_assets_stage=False,
+            numeric_enabled_for_spei_stage=endpoint_confirmed,
+            included_in_output_contract=endpoint_confirmed,
         )
     )
     return checks
@@ -797,6 +861,10 @@ def build_inventory(
     inspect_axes: bool = True,
     axis_mode: str | None = None,
 ) -> InventoryResult:
+    endpoint_status = str(
+        config.data["spei"]["two_week_endpoint_decision_status"]
+    )
+    endpoint_confirmed = endpoint_status == "CONFIRMED"
     specs = enumerate_assets(config)
     records = build_records(specs, hash_mode=hash_mode)
     selected_axis_mode = axis_mode or (
@@ -818,10 +886,14 @@ def build_inventory(
             "config_sha256": config.sha256,
             "hash_mode": hash_mode,
             "axis_mode": selected_axis_mode if inspect_axes else "disabled",
-            "spei_2w_timestamp_semantics": "unresolved",
-            "spei_2w_event_construction_allowed": False,
+            "spei_2w_timestamp_semantics": config.data["spei"][
+                "two_week_timestamp_semantics"
+            ],
+            "spei_2w_event_construction_allowed": endpoint_confirmed,
+            "spei_2w_endpoint_decision_status": endpoint_status,
             "spei_2w_numeric_executed": False,
-            "spei_2w_output_contract_enabled": False,
+            "spei_2w_numeric_stage": "spei",
+            "spei_2w_output_contract_enabled": endpoint_confirmed,
         },
     )
 

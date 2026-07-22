@@ -19,8 +19,10 @@ from climate_stress.spei import (  # noqa: E402
     WINDOW_NAMES,
     aggregate_manual_spei_event_six_windows,
     aggregate_manual_six_windows,
+    aggregate_two_week_spei_event_six_windows,
     build_chm_spatial_mapping,
     build_spei_caches,
+    build_two_week_cache,
     combine_parquet_partitions_new,
     detect_manual_spei_events,
     dynamic_ext_six_windows,
@@ -36,6 +38,7 @@ from climate_stress.spei import (  # noqa: E402
     write_parquet_partition_new,
     write_two_week_audit,
 )
+from climate_stress.core import SPEI_2W_PENDING_STATUS  # noqa: E402
 import climate_stress.spei as spei_module  # noqa: E402
 
 
@@ -659,17 +662,26 @@ def test_strict_monthly_run_requires_three_months_below_minus_one_point_five() -
     assert summary.peak_threshold_deficit == pytest.approx(0.5)
 
 
-def test_two_week_unresolved_skips_numeric_and_writes_audit(tmp_path: Path) -> None:
+def test_two_week_pending_endpoint_skips_numeric_and_writes_audit(tmp_path: Path) -> None:
     records, audit = prepare_two_week_records(
         [date(2019, 1, 1), date(2019, 1, 8)],
         [-1.2, -1.3],
-        config_semantics="unresolved",
-        timestamp_position=None,
-        state_days=None,
+        config_semantics=(
+            "trailing_14_day_accumulation_end_with_forward_7_day_state"
+        ),
+        endpoint_decision_status="PENDING_USER_DECISION",
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
+        accumulation_days=14,
+        state_days=7,
     )
     assert records is None
     assert not audit.numeric_executed
-    assert audit.status == "SKIPPED_UNRESOLVED_TIME_SEMANTICS"
+    assert audit.status == SPEI_2W_PENDING_STATUS
+    assert audit.endpoint_decision_status == "PENDING_USER_DECISION"
+    assert audit.as_dict()["event_state_support"].startswith(
+        "development_candidate:"
+    )
     path = write_two_week_audit(tmp_path / "spei_2w_audit.json", audit)
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["numeric_executed"] is False
@@ -677,13 +689,113 @@ def test_two_week_unresolved_skips_numeric_and_writes_audit(tmp_path: Path) -> N
         write_two_week_audit(path, audit)
 
 
+def test_two_week_cache_maps_real_netcdf_and_resumes_with_gap_labels(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "spei-2w.nc"
+    labels = [date(2019, 1, 1), date(2019, 1, 15), date(2019, 1, 22)]
+    with nc.Dataset(source, "w") as dataset:
+        dataset.createDimension("time", len(labels))
+        dataset.createDimension("lat", 2)
+        dataset.createDimension("lon", 2)
+        time = dataset.createVariable("time", "i4", ("time",))
+        time.units = "days since 1961-01-01"
+        time.calendar = "standard"
+        time[:] = nc.date2num(
+            [datetime(value.year, value.month, value.day) for value in labels],
+            units=time.units,
+            calendar=time.calendar,
+        )
+        dataset.createVariable("lat", "f8", ("lat",))[:] = [0.0, 1.0]
+        dataset.createVariable("lon", "f8", ("lon",))[:] = [10.0, 11.0]
+        values = dataset.createVariable(
+            "SPEI-2W", "f4", ("time", "lat", "lon"), fill_value=np.nan
+        )
+        for index in range(len(labels)):
+            base = float(index * 4)
+            values[index, :, :] = np.asarray(
+                [[base, base + 1], [base + 2, base + 3]], dtype=np.float32
+            )
+    cache = build_two_week_cache(
+        source,
+        [0.5],
+        [10.5],
+        tmp_path / "cache",
+        endpoint_decision_status="CONFIRMED",
+    )
+    np.testing.assert_array_equal(
+        np.load(cache.release_ordinals),
+        np.asarray([value.toordinal() for value in labels], dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        np.load(cache.values)[:, 0],
+        np.asarray([1.5, 5.5, 9.5], dtype=np.float32),
+    )
+    metadata = json.loads(cache.metadata.read_text(encoding="utf-8"))
+    assert metadata["endpoint_decision_status"] == "CONFIRMED"
+    assert metadata["accumulation_support"].startswith("confirmed:")
+    assert metadata["event_state_support"].startswith("confirmed:")
+    assert metadata["read_policy"] == "one explicit time index per source read"
+    first_source_sha256 = metadata["source_sha256"]
+    resumed = build_two_week_cache(
+        source,
+        [0.5],
+        [10.5],
+        tmp_path / "cache",
+        endpoint_decision_status="CONFIRMED",
+        resume=True,
+    )
+    assert resumed == cache
+    with nc.Dataset(source, "r+") as dataset:
+        dataset.variables["SPEI-2W"][0, :, :] = np.asarray(
+            [[100.0, 101.0], [102.0, 103.0]], dtype=np.float32
+        )
+    rebuilt = build_two_week_cache(
+        source,
+        [0.5],
+        [10.5],
+        tmp_path / "cache",
+        endpoint_decision_status="CONFIRMED",
+        resume=True,
+    )
+    assert rebuilt == cache
+    assert np.load(rebuilt.values)[0, 0] == pytest.approx(101.5)
+    rebuilt_metadata = json.loads(rebuilt.metadata.read_text(encoding="utf-8"))
+    assert rebuilt_metadata["source_sha256"] != first_source_sha256
+    with pytest.raises(ValueError, match="confirmed endpoint"):
+        build_two_week_cache(
+            source,
+            [0.5],
+            [10.5],
+            tmp_path / "pending-cache",
+            endpoint_decision_status="PENDING_USER_DECISION",
+        )
+
+
 def test_two_week_requires_all_explicit_parameters_before_execution() -> None:
     timestamps = [date(2019, 1, 1), date(2019, 1, 8)]
     records, audit = prepare_two_week_records(
         timestamps,
         [-1.2, -1.3],
-        config_semantics="period_start",
-        timestamp_position=None,
+        config_semantics="unresolved",
+        endpoint_decision_status="CONFIRMED",
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
+        accumulation_days=14,
+        state_days=7,
+    )
+    assert records is None
+    assert audit.status == "SKIPPED_UNRESOLVED_TIME_SEMANTICS"
+    records, audit = prepare_two_week_records(
+        timestamps,
+        [-1.2, -1.3],
+        config_semantics=(
+            "trailing_14_day_accumulation_end_with_forward_7_day_state"
+        ),
+        endpoint_decision_status="CONFIRMED",
+        accumulation_timestamp_position="end",
+        state_timestamp_position=None,
+        accumulation_days=14,
         state_days=7,
     )
     assert records is None
@@ -691,11 +803,132 @@ def test_two_week_requires_all_explicit_parameters_before_execution() -> None:
     records, audit = prepare_two_week_records(
         timestamps,
         [-1.2, -1.3],
-        config_semantics="period_start",
-        timestamp_position="start",
+        config_semantics=(
+            "trailing_14_day_accumulation_end_with_forward_7_day_state"
+        ),
+        endpoint_decision_status="CONFIRMED",
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
+        accumulation_days=14,
         state_days=7,
     )
     assert audit.numeric_executed
     assert records is not None and len(records) == 2
     assert records[0].support_start == date(2019, 1, 1)
     assert records[0].support_end_exclusive == date(2019, 1, 8)
+    assert audit.as_dict()["event_state_support"].startswith("confirmed:")
+
+
+@pytest.mark.parametrize(
+    ("release_dates", "values", "expected_left", "expected_right"),
+    [
+        (
+            [date(2019, 1, 1), date(2019, 1, 8), date(2019, 1, 15)],
+            [-0.5, -1.2, -0.5],
+            False,
+            False,
+        ),
+        (
+            [date(2019, 1, 1), date(2019, 1, 8), date(2019, 1, 15)],
+            [np.nan, -1.2, np.nan],
+            True,
+            True,
+        ),
+        (
+            [date(2019, 1, 1), date(2019, 1, 15), date(2019, 1, 29)],
+            [-0.5, -1.2, -0.5],
+            True,
+            True,
+        ),
+        (
+            [date(2019, 1, 1), date(2019, 1, 8)],
+            [-1.2, -0.5],
+            True,
+            False,
+        ),
+        (
+            [date(2019, 1, 1), date(2019, 1, 8)],
+            [-0.5, -1.2],
+            False,
+            True,
+        ),
+    ],
+)
+def test_two_week_source_censor_uses_only_immediately_adjacent_state(
+    release_dates: list[date],
+    values: list[float],
+    expected_left: bool,
+    expected_right: bool,
+) -> None:
+    panel = pd.DataFrame([_panel_row(year=2019, start_doy=1, end_doy=40)])
+    _long, events, bridges = aggregate_two_week_spei_event_six_windows(
+        panel,
+        release_dates,
+        np.asarray(values, dtype=float)[:, None],
+        cell_index_column="spei_cell_index",
+        minimum_coverage=0.0,
+        event_specs={"main": (-1.0, 1)},
+    )
+    assert len(events) == 1
+    event = events.iloc[0]
+    assert bool(event["source_left_censored"]) is expected_left
+    assert bool(event["source_right_censored"]) is expected_right
+    assert not bridges.empty
+    assert set(bridges["source_left_censored"].astype(bool)) == {expected_left}
+    assert set(bridges["source_right_censored"].astype(bool)) == {expected_right}
+
+
+def test_two_week_main_strict_gap_and_zero_event_contracts() -> None:
+    panel = pd.DataFrame([_panel_row(year=2019, start_doy=1, end_doy=40)])
+    dates = [date(2019, 1, 1) + timedelta(days=7 * offset) for offset in range(4)]
+    long, events, bridges = aggregate_two_week_spei_event_six_windows(
+        panel,
+        dates,
+        np.asarray([-1.6, -1.7, -1.8, 0.0], dtype=float)[:, None],
+        cell_index_column="spei_cell_index",
+        minimum_coverage=0.0,
+    )
+    assert set(events["variant"]) == {"k10_main", "k15_strict"}
+    strict = events.loc[events["variant"] == "k15_strict"].iloc[0]
+    assert strict["threshold"] == pytest.approx(-1.5)
+    assert strict["minimum_duration_releases"] == 3
+    assert strict["release_count"] == 3
+    assert strict["first_accumulation_start"] == date(2018, 12, 19)
+    assert strict["last_accumulation_end"] == date(2019, 1, 15)
+    assert strict["start_date"] == date(2019, 1, 1)
+    assert strict["end_date"] == date(2019, 1, 21)
+    assert set(events["timescale"]) == {"2W"}
+    assert set(bridges["timescale"]) == {"2W"}
+    full = long.loc[long["window"] == "full"].iloc[0]
+    assert full["chm_spei_2w_k10_main_count"] == 1
+    assert full["chm_spei_2w_k15_strict_count"] == 1
+
+    gap_dates = [date(2019, 1, 1), date(2019, 1, 15)]
+    gap_long, gap_events, _gap_bridges = aggregate_two_week_spei_event_six_windows(
+        panel,
+        gap_dates,
+        np.asarray([-1.2, -1.3], dtype=float)[:, None],
+        cell_index_column="spei_cell_index",
+        minimum_coverage=0.0,
+    )
+    gap_full = gap_long.loc[gap_long["window"] == "full"].iloc[0]
+    assert gap_full["chm_spei_2w_k10_main_count"] == 2
+    assert gap_full["chm_spei_2w_k15_strict_any"] == 0
+    assert pd.isna(gap_full["chm_spei_2w_k15_strict_peak_threshold_deficit"])
+    assert len(gap_events.loc[gap_events["variant"] == "k10_main"]) == 2
+
+    zero_long, zero_events, zero_bridges = (
+        aggregate_two_week_spei_event_six_windows(
+            panel,
+            dates,
+            np.asarray([-0.5, -0.4, -0.3, 0.0], dtype=float)[:, None],
+            cell_index_column="spei_cell_index",
+            minimum_coverage=0.0,
+        )
+    )
+    zero_full = zero_long.loc[zero_long["window"] == "full"].iloc[0]
+    assert zero_full["chm_spei_2w_k10_main_count"] == 0
+    assert zero_events.empty and {"event_id", "timescale"}.issubset(zero_events)
+    assert zero_bridges.empty and {"event_id", "timescale"}.issubset(
+        zero_bridges
+    )

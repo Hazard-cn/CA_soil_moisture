@@ -31,6 +31,7 @@ from climate_stress.core import (  # noqa: E402
     pentad_percentile_metrics,
     reporting_intervals,
     required_valid_count,
+    spei_2w_interval_contracts,
     spei_2w_records,
     type7_quantile,
 )
@@ -135,19 +136,59 @@ def test_monthly_spei_overlap_weights_partial_months_by_days() -> None:
 
 def test_spei_2w_support_is_explicitly_configurable() -> None:
     timestamps = [date(2019, 1, 14), date(2019, 1, 21)]
-    end_records = spei_2w_records(
+    contracts = spei_2w_interval_contracts(
+        timestamps,
+        accumulation_days=14,
+        state_days=7,
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
+    )
+    assert contracts[0].accumulation_start == date(2019, 1, 1)
+    assert contracts[0].accumulation_end_exclusive == date(2019, 1, 15)
+    assert contracts[0].state_start == date(2019, 1, 14)
+    assert contracts[0].state_end_exclusive == date(2019, 1, 21)
+    assert contracts[1].state_start == contracts[0].state_end_exclusive
+    records = spei_2w_records(
         timestamps,
         [-1.2, -1.3],
+        accumulation_days=14,
         state_days=7,
-        timestamp_position="end",
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
     )
-    event = detect_spei_runs(end_records, threshold=-1.0, min_periods=1)[0]
+    event = detect_spei_runs(records, threshold=-1.0, min_periods=1)[0]
     assert event.duration_days == 14
-    assert end_records[0].support_start == date(2019, 1, 8)
+    assert records[0].support_start == date(2019, 1, 14)
+    assert records[0].support_end_exclusive == date(2019, 1, 21)
     start_intervals = reporting_intervals(
         timestamps, state_days=7, timestamp_position="start"
     )
     assert start_intervals[0] == (date(2019, 1, 14), date(2019, 1, 21))
+    gap_records = spei_2w_records(
+        [date(2019, 1, 14), date(2019, 1, 28)],
+        [-1.2, -1.3],
+        accumulation_days=14,
+        state_days=7,
+        accumulation_timestamp_position="end",
+        state_timestamp_position="start",
+    )
+    assert len(detect_spei_runs(gap_records, threshold=-1.0, min_periods=1)) == 2
+    with pytest.raises(ValueError, match="strictly increasing"):
+        spei_2w_interval_contracts(
+            [date(2019, 1, 14), date(2019, 1, 14)],
+            accumulation_days=14,
+            state_days=7,
+            accumulation_timestamp_position="end",
+            state_timestamp_position="start",
+        )
+    with pytest.raises(ValueError, match="multiples"):
+        spei_2w_interval_contracts(
+            [date(2019, 1, 14), date(2019, 1, 22)],
+            accumulation_days=14,
+            state_days=7,
+            accumulation_timestamp_position="end",
+            state_timestamp_position="start",
+        )
     with pytest.raises(ValueError):
         reporting_intervals(timestamps, state_days=7, timestamp_position="unknown")
 

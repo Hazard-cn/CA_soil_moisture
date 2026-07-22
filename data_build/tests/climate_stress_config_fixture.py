@@ -20,6 +20,14 @@ def complete_frozen_v1_fixture(
         target = result.setdefault(section, {})
         for key, value in values.items():
             target.setdefault(key, value)
+    result.setdefault("spei", {}).setdefault(
+        "two_week_endpoint_decision_status", "PENDING_USER_DECISION"
+    )
+    scope = result.setdefault("scope", {})
+    scope.setdefault("profile", "non2w-dual-severity")
+    scope.setdefault("completion_scope_status", "PARTIAL_SCOPE")
+    scope.setdefault("spei_2w_numeric", False)
+    scope.setdefault("spei_2w_output", False)
     result.setdefault(
         "manual",
         {"path": str((tmp_path / "manual.docx").resolve()), "sha256": "0" * 64},

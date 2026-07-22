@@ -2,7 +2,7 @@
 
 ## 当前范围状态
 
-当前可执行配置的 `scope_profile` 为 `non2w-dual-severity`，运行、阶段标记和质量摘要均记录 `completion_scope_status=PARTIAL_SCOPE`。该状态明确表示：SPEI-2W 数值计算与输出契约均为 `false`，复合事件只保留两套独立 severity，不代替尚未由用户确认的 2W 时间戳语义和复合 severity 处理。只有相关语义经用户确认、实现和回归验证后，才可另建 run/version 并声明完整 v1；当前运行不得标记为完整 v1。
+当前可执行配置的 `scope_profile` 为 `non2w-dual-severity`，运行、阶段标记和质量摘要均记录 `completion_scope_status=PARTIAL_SCOPE`。该状态明确表示：SPEI-2W 数值计算与输出契约均为 `false`；复合事件按已确认口径保留热超额与土壤水亏缺两套独立 severity，不生成混合量纲标量。SPEI-2W 事件状态端点仍待确认，只有端点决定、正式配置、实现证据和回归验证同步闭合后，才可另建 run/version 并声明完整 v1；当前运行不得标记为完整 v1。
 
 ## 环境与路径
 
@@ -56,4 +56,8 @@ pilot、full 和断点续跑示例：
 
 ## 当前输入门禁
 
-截至 2026-07-22，正式 pilot/full 仍受以下输入或用户决定约束：ERA 1985、1986历史期修复及1980 UTC+8首日边界输入证据未闭合；GLEAM 2020两层输入未闭合；SPEI-2W时间支持和复合severity处理未获用户确认。assets阶段只把required/fatal或pipeline-scope检查作为全局阻断；`spei_2w_only`的unresolved检查保留审计并继续非2W的`PARTIAL_SCOPE`流水线。任何下载必须另行取得授权，本入口不会自动下载。
+截至 2026-07-22，GLEAM 2020 的 SMrz/SMs 输入已闭合；ERA 1985、1986历史期修复及1980 UTC+8首日边界所需的三项 CDS 获取任务已排队，但下载、逐文件校验和资产清单证据尚未全部完成。SPEI-2W 候选口径明确区分“标签结束的后向14日累积支持”与“标签起始的前向7日事件状态”，其中事件状态是否采用 `[label,label+6]` 仍为 `PENDING_USER_DECISION`。assets阶段把该项记为`spei_2w_only`范围限制，继续非2W的`PARTIAL_SCOPE`流水线；正式100格点pilot和full均尚未启动。本入口不会自行触发下载。
+
+## 2026-07-22 增量确认状态
+
+用户已确认复合事件维持两套独立severity、不得生成混合量纲标量，并确认pilot/full进程峰值预算分别为4 GiB与16 GiB。开发候选代码已覆盖SPEI-2W的双时间区间、7日缺档、主版K=-1至少1个release、严格版K=-1.5至少3个连续release、事件/bridge审计和FULL_SCOPE输出门禁；这些候选测试不构成端点确认，也不构成正式pilot证据。正式YAML继续保持`PENDING_USER_DECISION`、`PARTIAL_SCOPE/non2w-dual-severity`与2W数值/输出关闭。

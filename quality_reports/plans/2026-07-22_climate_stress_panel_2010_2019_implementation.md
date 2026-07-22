@@ -28,4 +28,12 @@
 ## 两级pilot与输出契约
 
 - A级`non2w-dual-severity`是缩减范围pilot：在SPEI-2W时间支持语义未确认时，2W数值链和字段保持禁用；复合热—土壤水事件只保留累计热超额和累计土壤水亏缺两个独立severity，不生成混合量纲标量。该运行必须标记`PARTIAL_SCOPE`，只能用于验证非2W算法、资源和输出接口，不得称为完整`data-climate-stress-2010-2019-v1`。
-- B级为完整`data-climate-stress-2010-2019-v1` pilot：仍须用户确认SPEI-2W时间支持/游程口径，以及是否维持双独立severity或提供有量纲依据的新公式；相关实现和反例测试完成后才可进入完整验收。未经确认，任何manifest、Material Passport或质量报告均不得标记完整v1通过。
+- B级为完整`data-climate-stress-2010-2019-v1` pilot：双独立severity已确认并保持，不生成混合量纲标量；仍须用户确认SPEI-2W事件状态端点，随后原子更新正式scope/config/审计证据并完成真实pilot。未经端点确认，任何manifest、Material Passport或质量报告均不得标记完整v1通过。
+
+## 2026-07-22 增量状态：端点决定仍待确认
+
+- 用户已确认复合事件维持热超额与土壤水亏缺两套独立severity，不生成单一混合量纲severity；资源门禁确认为pilot 4 GiB、full 16 GiB。
+- GLEAM 2020年SMrz/SMs输入及其来源证据已闭合。ERA 1985、1986历史期修复与1980 UTC+8首日边界的三项CDS获取任务已排队，但下载后输入校验与资产清单证据尚未闭合。
+- SPEI-2W开发候选实现明确区分后向14日累积支持`[label-13,label]`与前向7日事件状态；事件状态是否采用`[label,label+6]`仍为`PENDING_USER_DECISION`，不得写成用户已确认。
+- 正式YAML继续保持`PARTIAL_SCOPE/non2w-dual-severity`、`spei_2w_numeric=false`和`spei_2w_output=false`。候选`CONFIRMED/FULL_SCOPE`测试夹具只验证代码门禁，不授权正式配置、pilot或发布。
+- 正式100格点×2010/2016/2019 pilot和full均未启动；发布状态继续为`STOP`，版本谱系与真实运行证据仍须在输入和端点决定闭合后完成。

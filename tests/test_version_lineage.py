@@ -199,6 +199,52 @@ class VersionLineageTests(unittest.TestCase):
     def test_minimal_registry_graph_is_valid(self) -> None:
         self.assertEqual(vl.validate_registries(self.minimal_registries()), [])
 
+    def test_post_git_user_decision_requires_sanitized_scope_contract(self) -> None:
+        registries = self.minimal_registries()
+        decision = row(
+            "conversation_registry.csv",
+            thread_id="019f8058-2f2f-7152-b3eb-d6eb004dee60",
+            source_type="user",
+            started_at="2026-07-22",
+            ended_at="2026-07-22",
+            scope_reason=(
+                "included:post-git-user-decision;"
+                "decision_id=decision-test-authorization-20260722;authorization-only"
+            ),
+            canonical_ids="g185-current",
+            decision_summary=(
+                "Scoped download authorization; existing files remain immutable; "
+                "one method endpoint remains PENDING_USER_DECISION."
+            ),
+            evidence_level="direct-user-confirmed",
+            raw_committed="false",
+        )
+        registries["conversation_registry.csv"].rows.append(decision)
+        self.assertEqual(vl.validate_registries(registries), [])
+        evidence = vl.generated_conversation_evidence(registries)
+        self.assertIn("decision-test-authorization-20260722", evidence)
+        self.assertIn("Git后用户授权决策", evidence)
+
+        invalid = self.minimal_registries()
+        invalid_decision = dict(decision)
+        invalid_decision["scope_reason"] = "disposition=relevant;exact-cwd"
+        invalid_decision["evidence_level"] = "single-source-inferred"
+        invalid["conversation_registry.csv"].rows.append(invalid_decision)
+        errors = vl.validate_registries(invalid)
+        self.assertTrue(
+            any("timestamp outside reconstruction window" in error for error in errors)
+        )
+
+        duplicate = self.minimal_registries()
+        duplicate["conversation_registry.csv"].rows.append(dict(decision))
+        second = dict(decision)
+        second["thread_id"] = "019f8058-2f2f-7152-b3eb-d6eb004dee61"
+        duplicate["conversation_registry.csv"].rows.append(second)
+        errors = vl.validate_registries(duplicate)
+        self.assertTrue(
+            any("duplicate post-Git decision_id" in error for error in errors)
+        )
+
     def test_detailed_changelog_has_three_change_dimensions(self) -> None:
         text = vl.generated_version_changelog(self.minimal_registries())
         self.assertIn("### 数据变化", text)

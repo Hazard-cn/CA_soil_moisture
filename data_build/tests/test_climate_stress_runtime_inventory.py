@@ -243,6 +243,47 @@ def test_unsupported_runtime_claims_are_rejected(tmp_path: Path, key: str) -> No
         load_config(path)
 
 
+def test_two_week_endpoint_and_scope_combinations_fail_closed(tmp_path: Path) -> None:
+    pending_full = make_config(tmp_path).data
+    pending_full["scope"].update(
+        {
+            "profile": "full-spei2w-dual-severity",
+            "completion_scope_status": "FULL_SCOPE",
+            "spei_2w_numeric": True,
+            "spei_2w_output": True,
+        }
+    )
+    path = tmp_path / "pending-full.yaml"
+    path.write_text(yaml.safe_dump(pending_full, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="endpoint decision and scope"):
+        load_config(path)
+
+    confirmed_partial = make_config(tmp_path).data
+    confirmed_partial["spei"]["two_week_endpoint_decision_status"] = "CONFIRMED"
+    path = tmp_path / "confirmed-partial.yaml"
+    path.write_text(
+        yaml.safe_dump(confirmed_partial, sort_keys=False), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="endpoint decision and scope"):
+        load_config(path)
+
+    confirmed_full = make_config(tmp_path).data
+    confirmed_full["spei"]["two_week_endpoint_decision_status"] = "CONFIRMED"
+    confirmed_full["scope"].update(
+        {
+            "profile": "full-spei2w-dual-severity",
+            "completion_scope_status": "FULL_SCOPE",
+            "spei_2w_numeric": True,
+            "spei_2w_output": True,
+        }
+    )
+    path = tmp_path / "confirmed-full.yaml"
+    path.write_text(yaml.safe_dump(confirmed_full, sort_keys=False), encoding="utf-8")
+    loaded = load_config(path)
+    assert loaded.scope_profile == "full-spei2w-dual-severity"
+    assert loaded.completion_scope_status == "FULL_SCOPE"
+
+
 def _write_inventory_era(path: Path, axis_year: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     start = np.datetime64(f"{int(axis_year):04d}-01-01T00", "h")
@@ -510,8 +551,10 @@ def test_inventory_enumerates_frozen_asset_universe(tmp_path: Path) -> None:
     assert len(by_family["phenology"]) == 30
     assert all(spec.path.parent.name == "maize" for spec in by_family["phenology"])
     two_week = by_family["spei_2w"][0]
-    assert two_week.timestamp_semantics == "unresolved"
-    assert "disabled" in two_week.role
+    assert two_week.timestamp_semantics == (
+        "trailing_14_day_accumulation_end_with_forward_7_day_state"
+    )
+    assert "development-candidate" in two_week.role
 
 
 @pytest.mark.parametrize("mode", ["representative", "all"])
@@ -598,7 +641,7 @@ def test_exact_subgrid_and_spei_selected_domain_helpers() -> None:
     )
 
 
-def test_inventory_marks_2w_semantics_blocked_without_interpreting_it(
+def test_inventory_marks_pending_2w_scope_limited_without_executing_it(
     tmp_path: Path,
 ) -> None:
     result = build_inventory(
@@ -610,14 +653,55 @@ def test_inventory_marks_2w_semantics_blocked_without_interpreting_it(
         if item["check_id"] == "spei_2w.timestamp_semantics"
     )
     assert check["status"] == "blocked"
-    assert check["evidence"]["timestamp_semantics"] == "unresolved"
+    assert check["evidence"]["timestamp_semantics"] == (
+        "trailing_14_day_accumulation_end_with_forward_7_day_state"
+    )
     assert check["evidence"]["event_construction_allowed"] is False
+    assert check["evidence"]["endpoint_decision_status"] == (
+        "PENDING_USER_DECISION"
+    )
+    assert check["evidence"]["decision_basis"] == "development_candidate_only"
     assert check["evidence"]["blocking_scope"] == "spei_2w_only"
-    assert check["evidence"]["numeric_executed"] is False
-    assert check["evidence"]["excluded_from_output_contract"] is True
-    assert result.metadata["spei_2w_timestamp_semantics"] == "unresolved"
+    assert check["evidence"]["numeric_executed_by_assets_stage"] is False
+    assert check["evidence"]["numeric_enabled_for_spei_stage"] is False
+    assert check["evidence"]["included_in_output_contract"] is False
+    assert result.metadata["spei_2w_timestamp_semantics"] == (
+        "trailing_14_day_accumulation_end_with_forward_7_day_state"
+    )
+    assert result.metadata["spei_2w_endpoint_decision_status"] == (
+        "PENDING_USER_DECISION"
+    )
+    assert result.metadata["spei_2w_event_construction_allowed"] is False
+    assert result.metadata["spei_2w_output_contract_enabled"] is False
     assert result.blocked
     assert not result.pipeline_blocked
+
+
+def test_inventory_enables_2w_only_for_confirmed_full_scope(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    config.data["spei"]["two_week_endpoint_decision_status"] = "CONFIRMED"
+    config.data["scope"].update(
+        {
+            "profile": "full-spei2w-dual-severity",
+            "completion_scope_status": "FULL_SCOPE",
+            "spei_2w_numeric": True,
+            "spei_2w_output": True,
+        }
+    )
+    result = build_inventory(config, hash_mode="pilot", inspect_axes=False)
+    check = next(
+        item
+        for item in result.checks
+        if item["check_id"] == "spei_2w.timestamp_semantics"
+    )
+    assert check["status"] == "pass"
+    assert check["evidence"]["endpoint_decision_status"] == "CONFIRMED"
+    assert check["evidence"]["event_construction_allowed"] is True
+    assert check["evidence"]["blocking_scope"] == "none"
+    assert check["evidence"]["numeric_enabled_for_spei_stage"] is True
+    assert check["evidence"]["included_in_output_contract"] is True
+    assert result.metadata["spei_2w_event_construction_allowed"] is True
+    assert result.metadata["spei_2w_output_contract_enabled"] is True
 
 
 def test_inventory_json_and_parquet_are_non_overwriting(tmp_path: Path) -> None:
