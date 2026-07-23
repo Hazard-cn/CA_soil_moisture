@@ -8,6 +8,10 @@
 
 2026-07-23审计接口停止线：修复初始化审计链后创建的新run `pilot-fullscope-a-auditfix-20260723T000001`已按逐阶段监督门推进至`aggregate`。该run的canonical长表及各来源窗口数值通过独立重汇，但`aggregate`正式事件审计接口不自包含：GLEAM完整事件的通用`event_family`与source censor字段被自动后缀化，GLEAM bridge缺少`layer`，通用`severity`又在没有逐行measure/unit说明的情况下混装温度、土壤水绝对亏缺和土壤水百分位亏缺三种量纲。因此该run在`aggregate`质量门处停止，不是可信pilot，不得运行`export`，不得覆盖、改写或`--resume`续跑。其第十次调用在stage与`_SUCCESS.json`发布后因调用方stdout关闭而记录`FAILED/RESPONSE_WRITE/BrokenPipe`，同时准确保留`stage_execution_status=COMPLETED`；该审计原样保留，不回填、不伪装成功。源码与测试修复通过后，可信pilot必须再次使用新的唯一run-id从`assets`开始执行。
 
+2026-07-23导出元数据停止线：run `pilot-fullscope-a-aggfix-20260723T054913`真实关闭aggregate审计接口问题并执行至`export`，但四个ERA coverage变量单位被误标为温度，三份bundle身份文件又缺少共同六字段`run_identity`，因此登记为`failed_quality_gate`且不运行`validate`。其export `_SUCCESS.json`不是最终result manifest。
+
+2026-07-23验证资源停止线：run `pilot-fullscope-a-exportfix-20260723T112218Z`真实关闭上述导出元数据问题，并完成全部379个指标、18个year-window分区、四格式和全部非目标格值的数值比较；partial报告内部PASS且格式最大差为0，但validate进程峰值`9,068,961,792`字节超过冻结4 GiB，阶段没有发布`_SUCCESS.json`。资源门优先，该run及partial只读保留、不得`--resume`；当前修复仅把完整NetCDF验证改为按指标批次关闭Dataset并限制每变量chunk cache，不减少验证覆盖、不抽样、不提高预算。可信pilot须在修复提交后使用新的唯一run-id从`assets`重做。
+
 ## 环境与路径
 
 提交的 YAML 不保存机器绝对路径。运行前必须在当前 PowerShell 会话提供下列八个变量，且展开结果必须为绝对路径；`CLIMATE_STRESS_OUTPUT_ROOT` 必须位于仓库或 worktree 外，并且不能是盘根、用户目录等宽泛目录。
@@ -39,7 +43,7 @@
 & .\data_build\scripts\powershell\run_climate_stress_panel.ps1 -Stage assets -RunId preflight-001 -PilotCells 100 -HashMode pilot
 ```
 
-以下pilot、full和断点续跑命令仅是后续运行示例；ERA 1980/1985/1986修复输入虽已闭合，但当前审计修复轮不得创建或运行新pilot，旧候选run也不得用这些命令续跑：
+以下pilot、full和断点续跑命令仅是后续运行示例；ERA 1980/1985/1986修复输入虽已闭合，但当前validate资源修复轮不得创建或运行新pilot，旧候选run也不得用这些命令续跑：
 
 ```powershell
 # 冻结 pilot：100 cells，配置中的 pilot years
@@ -62,7 +66,7 @@
 
 截至 2026-07-22，GLEAM 2020 的 SMrz/SMs 输入、ERA 1980/1985/1986修复输入和SPEI-2W端点A均已闭合；端点不再构成`spei_2w_only`范围限制。repair与legacy ERA文件的坐标轴仅存在浮点表示差时，跨文件一致性按形状相同且`rtol=0, atol=quality.coordinate_tolerance=1e-8`判断；每个文件到目标子网格仍逐坐标执行严格`1e-8`验证。输入事实已闭合；旧候选run不续跑，可信100格点pilot须在审计链修复和复审通过后使用新run-id执行，full尚未启动，本入口不会自行触发下载或运行。
 
-截至2026-07-23，输入事实仍保持闭合；当前阻断不是输入缺失，也不是气候指标数值错误，而是`aggregate`事件审计接口的字段身份与单位合同不完整。修复期间禁止运行任何数据stage；既有两个候选run均只读保留，下一次可信pilot仍须使用新run-id从`assets`开始。
+截至2026-07-23，输入事实仍保持闭合；aggregate事件审计接口与export元数据合同已经在后续物理run中真实关闭，当前唯一阻断是完整NetCDF验证的进程峰值超过冻结4 GiB。修复期间禁止运行任何数据stage；既有候选run及partial均只读保留，下一次可信pilot仍须使用新run-id从`assets`开始。
 
 ## 2026-07-22 增量确认状态
 

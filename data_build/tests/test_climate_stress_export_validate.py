@@ -12,6 +12,7 @@ import pytest
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts" / "python"
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import climate_stress.validate as validate_module  # noqa: E402
 from climate_stress.export import (  # noqa: E402
     CANONICAL_WINDOWS,
     LONG_KEY_COLUMNS,
@@ -214,8 +215,12 @@ def test_cf_netcdf_fixed_dimensions_mask_and_roundtrip(tmp_path: Path) -> None:
         years=YEARS,
         windows=CANONICAL_WINDOWS,
         metric_columns=("era5u8_tmean",),
+        netcdf_variable_chunk_cache_bytes=65_536,
     )
     assert report["selected_cells"] == 2
+    assert report["netcdf_variable_chunk_cache_bytes"] == 65_536
+    assert report["chunk_cache_configured_variables"] == 1
+    assert report["max_effective_variable_chunk_cache_bytes"] <= 65_536
     with nc.Dataset(path) as dataset:
         assert {name: len(dataset.dimensions[name]) for name in dataset.dimensions} == {
             "time": 10,
@@ -654,8 +659,14 @@ def test_export_entrypoints_reject_missing_or_empty_run_identity_before_writes(
     assert not (tmp_path / "empty-identity").exists()
 
 
-def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) -> None:
-    long = _long_panel()
+def test_full_chunked_bundle_validation_uses_aggregate_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    years = YEARS[:2]
+    long = _long_panel().loc[lambda frame: frame["year"].isin(years)].copy()
+    long["era5u8_tmax"] = long["era5u8_tmean"] + 5.0
+    long["gleam43a_smrz_mean_m3m3"] = long["era5u8_tmean"] / 10_000.0
     long.loc[long.index[-1], "era5u8_tmean"] = np.nan
     aggregate_source = tmp_path / "aggregate.parquet"
     long.sample(frac=1, random_state=7).to_parquet(aggregate_source, index=False)
@@ -664,19 +675,19 @@ def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) ->
     canonical.to_parquet(exported_long, index=False)
     wide = pivot_long_to_wide(
         long,
-        years=YEARS,
+        years=years,
         windows=CANONICAL_WINDOWS,
-        expected_long_rows=120,
-        expected_wide_rows=20,
+        expected_long_rows=24,
+        expected_wide_rows=4,
     )
     exported_wide = tmp_path / "wide.parquet"
     wide.to_parquet(exported_wide, index=False)
     netcdf = write_cf_netcdf(
         long,
         tmp_path / "cube.nc",
-        years=YEARS,
+        years=years,
         windows=CANONICAL_WINDOWS,
-        expected_rows=120,
+        expected_rows=24,
         scope_id=PARTIAL_SCOPE_ID,
         scope_status=PARTIAL_SCOPE_STATUS,
     )
@@ -685,7 +696,61 @@ def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) ->
         tmp_path / "panel.dta",
         tmp_path / "aliases.csv",
         tmp_path / "merge.do",
-        expected_rows=20,
+        expected_rows=4,
+    )
+    real_dataset = nc.Dataset
+    opened: list[object] = []
+
+    class TrackingVariables:
+        def __init__(self, values, owner) -> None:
+            self._values = values
+            self._owner = owner
+
+        def __getitem__(self, key):
+            self._owner.accessed_variables.append(str(key))
+            return self._values[key]
+
+        def __contains__(self, key) -> bool:
+            return key in self._values
+
+        def items(self):
+            return self._values.items()
+
+    class TrackingDataset:
+        def __init__(self, *args, **kwargs) -> None:
+            self._dataset = real_dataset(*args, **kwargs)
+            self.accessed_variables: list[str] = []
+            self.closed = False
+            self.variables = TrackingVariables(self._dataset.variables, self)
+            opened.append(self)
+
+        def __getattr__(self, name):
+            return getattr(self._dataset, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            self.close()
+
+        def close(self) -> None:
+            if not self.closed:
+                self._dataset.close()
+                self.closed = True
+
+    cache_calls: list[tuple[str, int, int]] = []
+    real_set_cache = validate_module._set_netcdf_variable_chunk_cache
+
+    def recording_set_cache(variable, cache_bytes: int) -> int:
+        effective = real_set_cache(variable, cache_bytes)
+        cache_calls.append((str(variable.name), cache_bytes, effective))
+        return effective
+
+    monkeypatch.setattr(validate_module.nc, "Dataset", TrackingDataset)
+    monkeypatch.setattr(
+        validate_module,
+        "_set_netcdf_variable_chunk_cache",
+        recording_set_cache,
     )
     report = validate_export_bundle_full(
         aggregate_source,
@@ -694,17 +759,43 @@ def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) ->
         netcdf,
         dta,
         aliases,
-        years=YEARS,
+        years=years,
         windows=CANONICAL_WINDOWS,
         metric_batch_size=1,
         dta_row_batch_size=7,
         spatial_row_block=31,
+        netcdf_variable_chunk_cache_bytes=65_536,
     )
-    assert report["long_parquet"]["rows"] == 120
-    assert report["wide_parquet"]["rows"] == 20
-    assert report["netcdf"]["nonselected_values_checked"] > 0
-    assert report["dta"]["rows"] == 20
+    metrics = {
+        "era5u8_tmean",
+        "era5u8_tmax",
+        "gleam43a_smrz_mean_m3m3",
+    }
+    assert report["long_parquet"]["rows"] == 24
+    assert report["wide_parquet"]["rows"] == 4
+    assert report["netcdf"]["rows"] == 24
+    assert report["netcdf"]["finite_values_compared"] == 71
+    assert report["netcdf"]["missing_values_compared"] == 1
+    assert report["netcdf"]["nonselected_values_checked"] == (
+        len(metrics) * len(years) * len(CANONICAL_WINDOWS) * (376 * 616 - 2)
+    )
+    assert report["netcdf"]["netcdf_variable_chunk_cache_bytes"] == 65_536
+    assert report["netcdf"]["metric_dataset_batches"] == len(metrics)
+    assert report["netcdf"]["max_metrics_per_dataset_open"] == 1
+    assert report["netcdf"]["chunk_cache_configured_variables"] == len(metrics)
+    assert report["netcdf"]["max_effective_variable_chunk_cache_bytes"] <= 65_536
+    assert report["dta"]["rows"] == 4
     assert all(value["max_abs_difference"] <= 1e-6 for value in report.values())
+    assert len(opened) == 2 + len(metrics)
+    assert all(dataset.closed for dataset in opened)
+    for dataset in opened[-len(metrics) :]:
+        assert len(metrics.intersection(dataset.accessed_variables)) <= 1
+    assert {name for name, _, _ in cache_calls} == metrics
+    assert all(
+        requested == 65_536 and effective <= requested
+        for _, requested, effective in cache_calls
+    )
+    monkeypatch.setattr(validate_module.nc, "Dataset", real_dataset)
 
     corrupted = canonical.copy()
     corrupted.loc[corrupted.index[-2], "era5u8_tmean"] += 0.5
@@ -716,7 +807,7 @@ def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) ->
         validate_long_parquet_full(
             aggregate_source,
             corrupted_path,
-            years=YEARS,
+            years=years,
             windows=CANONICAL_WINDOWS,
             metric_batch_size=1,
         )
@@ -744,6 +835,66 @@ def test_netcdf_rejects_any_nonselected_value(tmp_path: Path) -> None:
             windows=CANONICAL_WINDOWS,
             metric_columns=("era5u8_tmean",),
             spatial_row_block=17,
+            netcdf_variable_chunk_cache_bytes=65_536,
+        )
+
+
+@pytest.mark.parametrize(
+    "cache_bytes",
+    [None, 0, -1, True, 1.5, "1048576"],
+)
+def test_netcdf_variable_chunk_cache_must_be_a_positive_integer(
+    tmp_path: Path,
+    cache_bytes,
+) -> None:
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        validate_export_bundle_full(
+            tmp_path / "missing-aggregate.parquet",
+            tmp_path / "missing-long.parquet",
+            tmp_path / "missing-wide.parquet",
+            tmp_path / "missing.nc",
+            tmp_path / "missing.dta",
+            tmp_path / "missing-alias.csv",
+            years=(2010,),
+            netcdf_variable_chunk_cache_bytes=cache_bytes,
+        )
+
+
+def test_netcdf_variable_chunk_cache_cannot_exceed_one_mib(
+    tmp_path: Path,
+) -> None:
+    over_limit = 1_048_577
+    with pytest.raises(ValueError, match="must be at most 1048576 bytes"):
+        validate_export_bundle_full(
+            tmp_path / "missing-aggregate.parquet",
+            tmp_path / "missing-long.parquet",
+            tmp_path / "missing-wide.parquet",
+            tmp_path / "missing.nc",
+            tmp_path / "missing.dta",
+            tmp_path / "missing-alias.csv",
+            years=(2010,),
+            netcdf_variable_chunk_cache_bytes=over_limit,
+        )
+    with pytest.raises(ValueError, match="must be at most 1048576 bytes"):
+        validate_cf_netcdf(
+            tmp_path / "missing.nc",
+            pd.DataFrame(),
+            years=(2010,),
+            netcdf_variable_chunk_cache_bytes=over_limit,
+        )
+    with pytest.raises(ValueError, match="must be at most 1048576 bytes"):
+        validate_module.validate_netcdf_full(
+            tmp_path / "missing-aggregate.parquet",
+            tmp_path / "missing.nc",
+            years=(2010,),
+            netcdf_variable_chunk_cache_bytes=over_limit,
+        )
+    with pytest.raises(ValueError, match="must be at most 1048576 bytes"):
+        validate_netcdf_roundtrip(
+            pd.DataFrame(),
+            tmp_path / "missing.nc",
+            years=(2010,),
+            netcdf_variable_chunk_cache_bytes=over_limit,
         )
 
 

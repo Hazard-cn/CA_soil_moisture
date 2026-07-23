@@ -5539,6 +5539,7 @@ def _read_v3_validation_projection(
 def _handle_validate(request: StageRequest) -> StageOutcome:
     from .export import LONG_KEY_COLUMNS, WIDE_KEY_COLUMNS
     from .validate import (
+        DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
         validate_export_bundle_full,
         validate_legacy_fields,
         validate_v3_coordinate_year_match,
@@ -5655,6 +5656,12 @@ def _handle_validate(request: StageRequest) -> StageOutcome:
             spatial_row_block=int(
                 request.config.data.get("runtime", {}).get(
                     "validation_spatial_row_block", 32
+                )
+            ),
+            netcdf_variable_chunk_cache_bytes=int(
+                request.config.data.get("runtime", {}).get(
+                    "validation_netcdf_variable_chunk_cache_bytes",
+                    DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
                 )
             ),
         )
@@ -6378,7 +6385,14 @@ class ClimateStressPipeline:
             for key, value in sorted(runtime.items())
             if any(
                 token in key.lower()
-                for token in ("block", "chunk", "row_group", "batch", "dtype")
+                for token in (
+                    "block",
+                    "chunk",
+                    "cache",
+                    "row_group",
+                    "batch",
+                    "dtype",
+                )
             )
         }
         cells = int(

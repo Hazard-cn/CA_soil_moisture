@@ -53,6 +53,7 @@ title: Git 前版本重建缺口
 | run-data-climate-stress-panel-v1-pilot-planned-20260722 | data-climate-stress-2010-2019-v1 | planned_not_run |
 | run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001 | data-climate-stress-2010-2019-v1 | failed_quality_gate |
 | run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913 | data-climate-stress-2010-2019-v1 | failed_quality_gate |
+| run-data-climate-stress-panel-v1-pilot-fullscope-a-exportfix-20260723T112218Z | data-climate-stress-2010-2019-v1 | failed_quality_gate |
 
 ## 解释规则
 
@@ -66,4 +67,4 @@ title: Git 前版本重建缺口
 - `report-v1`：The v1 label is inferred from the later report sequence
 - `data-v2-main-pre-spei-fix`：The former local data_build/data/processed/data_v2_main.dta is missing and cannot be substituted by a later file
 - `data-v2-main-post-spei-fix`：The same historical path named data_v2_main.dta referred to a structurally different file
-- `data-climate-stress-2010-2019-v1`：The physical run pilot-fullscope-a-auditfix-20260723T000001 reached aggregate and failed the event-audit quality gate. The physical run pilot-fullscope-a-aggfix-20260723T054913 fixed aggregate, reached export, and failed the export metadata quality gate. failed_quality_gate is not a pipeline stage failure and neither run is publishable. The separate replacement pilot remains planned_not_run.
+- `data-climate-stress-2010-2019-v1`：The physical run pilot-fullscope-a-auditfix-20260723T000001 reached aggregate and failed the event-audit quality gate. The physical run pilot-fullscope-a-aggfix-20260723T054913 fixed aggregate, reached export, and failed the export metadata quality gate. The physical run pilot-fullscope-a-exportfix-20260723T112218Z fixed export metadata and completed the full numeric validation logic, but its validate process exceeded the frozen 4 GiB budget and published no validate SUCCESS. Partial validation PASS is not a result manifest. All three physical runs are non-publishable; the separate replacement pilot remains planned_not_run.

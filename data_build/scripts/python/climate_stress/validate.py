@@ -9,6 +9,7 @@ import netCDF4 as nc
 import numpy as np
 import pandas as pd
 
+from .config import MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES
 from .export import (
     CANONICAL_WINDOWS,
     LONG_KEY_COLUMNS,
@@ -24,9 +25,55 @@ class PanelValidationError(AssertionError):
     """Raised when an artifact violates a frozen acceptance criterion."""
 
 
+DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES = (
+    MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES
+)
+
+
 def _check(condition: bool, message: str) -> None:
     if not condition:
         raise PanelValidationError(message)
+
+
+def _positive_integer(value: object, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _bounded_netcdf_variable_chunk_cache_bytes(value: object) -> int:
+    cache_bytes = _positive_integer(
+        value,
+        name="netcdf_variable_chunk_cache_bytes",
+    )
+    if cache_bytes > MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES:
+        raise ValueError(
+            "netcdf_variable_chunk_cache_bytes must be at most "
+            f"{MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES} bytes"
+        )
+    return cache_bytes
+
+
+def _set_netcdf_variable_chunk_cache(variable: object, cache_bytes: int) -> int:
+    """Cap one variable's HDF5 chunk cache before its first data read."""
+
+    cache_bytes = _bounded_netcdf_variable_chunk_cache_bytes(cache_bytes)
+    _, nelems, preemption = variable.get_var_chunk_cache()
+    variable.set_var_chunk_cache(
+        size=cache_bytes,
+        nelems=int(nelems),
+        preemption=float(preemption),
+    )
+    effective_size, _, _ = variable.get_var_chunk_cache()
+    effective_size = int(effective_size)
+    _check(
+        0 < effective_size <= cache_bytes,
+        (
+            f"NetCDF variable {getattr(variable, 'name', '<unknown>')} "
+            f"chunk cache {effective_size} exceeds cap {cache_bytes}"
+        ),
+    )
+    return effective_size
 
 
 def _rounded_tenth(values: pd.Series) -> np.ndarray:
@@ -690,9 +737,13 @@ def validate_cf_netcdf(
     spec: TargetGridSpec = TARGET_GRID,
     spatial_row_block: int = 32,
     check_nonselected: bool = True,
+    netcdf_variable_chunk_cache_bytes: int = DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
 ) -> dict[str, int]:
     if spatial_row_block <= 0:
         raise ValueError("spatial_row_block must be positive")
+    cache_bytes = _bounded_netcdf_variable_chunk_cache_bytes(
+        netcdf_variable_chunk_cache_bytes
+    )
     dataset = nc.Dataset(path)
     try:
         expected_dimensions = {
@@ -739,6 +790,8 @@ def validate_cf_netcdf(
             masked = np.ma.getmaskarray(values)
             _check(bool(masked[outside].all()), f"{identifier} contains data outside selected grid")
         nonselected_values_checked = 0
+        chunk_cache_configured_variables = 0
+        max_effective_variable_chunk_cache_bytes = 0
         for metric in metric_columns or ():
             _check(metric in dataset.variables, f"NetCDF lacks metric {metric}")
             variable = dataset.variables[metric]
@@ -764,6 +817,15 @@ def validate_cf_netcdf(
             ]
             _check(not missing_metadata, f"{metric} lacks NetCDF metadata: {missing_metadata}")
             if check_nonselected:
+                effective_cache_bytes = _set_netcdf_variable_chunk_cache(
+                    variable,
+                    cache_bytes,
+                )
+                chunk_cache_configured_variables += 1
+                max_effective_variable_chunk_cache_bytes = max(
+                    max_effective_variable_chunk_cache_bytes,
+                    effective_cache_bytes,
+                )
                 for start in range(0, spec.nlat, spatial_row_block):
                     stop = min(start + spatial_row_block, spec.nlat)
                     values = np.ma.filled(variable[:, :, start:stop, :], np.nan)
@@ -785,6 +847,11 @@ def validate_cf_netcdf(
         "longitude": spec.nlon,
         "selected_cells": len(crosswalk),
         "nonselected_values_checked": nonselected_values_checked,
+        "netcdf_variable_chunk_cache_bytes": cache_bytes,
+        "chunk_cache_configured_variables": chunk_cache_configured_variables,
+        "max_effective_variable_chunk_cache_bytes": (
+            max_effective_variable_chunk_cache_bytes
+        ),
     }
 
 
@@ -798,7 +865,11 @@ def validate_netcdf_roundtrip(
     years: Sequence[int] = tuple(range(2010, 2020)),
     windows: Sequence[str] = CANONICAL_WINDOWS,
     spec: TargetGridSpec = TARGET_GRID,
+    netcdf_variable_chunk_cache_bytes: int = DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
 ) -> dict[str, int | float]:
+    cache_bytes = _bounded_netcdf_variable_chunk_cache_bytes(
+        netcdf_variable_chunk_cache_bytes
+    )
     metrics = [
         column
         for column in expected_long.columns
@@ -812,6 +883,7 @@ def validate_netcdf_roundtrip(
         windows=windows,
         metric_columns=metrics,
         spec=spec,
+        netcdf_variable_chunk_cache_bytes=cache_bytes,
     )
     sample = _sample(expected_long, sample_size, seed)
     year_lookup = {int(year): index for index, year in enumerate(years)}
@@ -823,6 +895,7 @@ def validate_netcdf_roundtrip(
             expected_values = pd.to_numeric(sample[metric], errors="coerce").to_numpy(dtype=np.float64)
             observed_values = np.full(len(sample), np.nan, dtype=np.float64)
             variable = dataset.variables[metric]
+            _set_netcdf_variable_chunk_cache(variable, cache_bytes)
             for position, row in enumerate(sample.itertuples(index=False)):
                 value = variable[
                     year_lookup[int(row.year)],
@@ -862,12 +935,21 @@ def validate_netcdf_full(
     metric_batch_size: int = 8,
     spatial_row_block: int = 32,
     spec: TargetGridSpec = TARGET_GRID,
+    netcdf_variable_chunk_cache_bytes: int = DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
 ) -> dict[str, int | float]:
     """Compare all selected values and scan every nonselected NetCDF value."""
 
     import pyarrow.dataset as ds
 
+    metric_batch_size = _positive_integer(
+        metric_batch_size,
+        name="metric_batch_size",
+    )
+    cache_bytes = _bounded_netcdf_variable_chunk_cache_bytes(
+        netcdf_variable_chunk_cache_bytes
+    )
     metrics = _parquet_metric_columns(canonical_source_path)
+    _check(bool(metrics), "Canonical source lacks numeric NetCDF metrics")
     source_dataset = ds.dataset(str(canonical_source_path), format="parquet")
     first = _parquet_partition(
         source_dataset,
@@ -889,6 +971,7 @@ def validate_netcdf_full(
         spec=spec,
         spatial_row_block=spatial_row_block,
         check_nonselected=False,
+        netcdf_variable_chunk_cache_bytes=cache_bytes,
     )
     mask = np.zeros((spec.nlat, spec.nlon), dtype=bool)
     mask[
@@ -902,18 +985,41 @@ def validate_netcdf_full(
     missing = 0
     maximum = 0.0
     nonselected_values_checked = 0
-    dataset = nc.Dataset(path)
-    try:
+    with nc.Dataset(path) as dataset:
         cube_metrics = {
             name
             for name, variable in dataset.variables.items()
             if variable.dimensions == ("time", "window", "latitude", "longitude")
         }
         _check(cube_metrics == set(metrics), "NetCDF cube metric set differs from canonical source")
-        for year in years:
-            for window in windows:
-                rows_in_partition: int | None = None
-                for batch in _chunks(metrics, metric_batch_size):
+    partition_rows: dict[tuple[int, str], int] = {}
+    metric_dataset_batches = 0
+    max_metrics_per_dataset_open = 0
+    chunk_cache_configured_variables = 0
+    max_effective_variable_chunk_cache_bytes = 0
+    for batch in _chunks(metrics, metric_batch_size):
+        metric_dataset_batches += 1
+        max_metrics_per_dataset_open = max(
+            max_metrics_per_dataset_open,
+            len(batch),
+        )
+        with nc.Dataset(path) as dataset:
+            batch_variables: dict[str, object] = {}
+            for metric in batch:
+                _check(metric in dataset.variables, f"NetCDF lacks metric {metric}")
+                variable = dataset.variables[metric]
+                effective_cache_bytes = _set_netcdf_variable_chunk_cache(
+                    variable,
+                    cache_bytes,
+                )
+                batch_variables[metric] = variable
+                chunk_cache_configured_variables += 1
+                max_effective_variable_chunk_cache_bytes = max(
+                    max_effective_variable_chunk_cache_bytes,
+                    effective_cache_bytes,
+                )
+            for year in years:
+                for window in windows:
                     expected = _sort(
                         _parquet_partition(
                             source_dataset,
@@ -923,13 +1029,23 @@ def validate_netcdf_full(
                         ),
                         ("era01_cell_id",),
                     )
-                    if rows_in_partition is None:
-                        rows_in_partition = len(expected)
+                    partition_key = (int(year), str(window))
+                    if partition_key not in partition_rows:
+                        partition_rows[partition_key] = len(expected)
+                        rows += len(expected)
+                    else:
+                        _check(
+                            partition_rows[partition_key] == len(expected),
+                            (
+                                "Canonical NetCDF partition row count differs "
+                                f"between metric batches in {year}/{window}"
+                            ),
+                        )
                     lat_idx = expected["lat_idx"].to_numpy(dtype=np.int64)
                     lon_idx = expected["lon_idx"].to_numpy(dtype=np.int64)
                     for metric in batch:
                         layer = np.ma.filled(
-                            dataset.variables[metric][
+                            batch_variables[metric][
                                 year_lookup[int(year)],
                                 window_lookup[str(window)],
                                 :,
@@ -952,9 +1068,6 @@ def validate_netcdf_full(
                         finite += int(report["finite"])
                         missing += int(report["missing"])
                         maximum = max(maximum, float(report["max_abs_difference"]))
-                rows += int(rows_in_partition or 0)
-    finally:
-        dataset.close()
     return {
         **structure,
         "rows": rows,
@@ -963,6 +1076,13 @@ def validate_netcdf_full(
         "missing_values_compared": missing,
         "nonselected_values_checked": nonselected_values_checked,
         "max_abs_difference": maximum,
+        "netcdf_variable_chunk_cache_bytes": cache_bytes,
+        "metric_dataset_batches": metric_dataset_batches,
+        "max_metrics_per_dataset_open": max_metrics_per_dataset_open,
+        "chunk_cache_configured_variables": chunk_cache_configured_variables,
+        "max_effective_variable_chunk_cache_bytes": (
+            max_effective_variable_chunk_cache_bytes
+        ),
     }
 
 
@@ -1107,9 +1227,13 @@ def validate_export_bundle_full(
     dta_row_batch_size: int = 50_000,
     spatial_row_block: int = 32,
     spec: TargetGridSpec = TARGET_GRID,
+    netcdf_variable_chunk_cache_bytes: int = DEFAULT_NETCDF_VARIABLE_CHUNK_CACHE_BYTES,
 ) -> dict[str, dict[str, int | float]]:
     """Run full, chunked, aggregate-source-based checks for every public format."""
 
+    cache_bytes = _bounded_netcdf_variable_chunk_cache_bytes(
+        netcdf_variable_chunk_cache_bytes
+    )
     return {
         "long_parquet": validate_long_parquet_full(
             canonical_source_path,
@@ -1136,6 +1260,7 @@ def validate_export_bundle_full(
             metric_batch_size=metric_batch_size,
             spatial_row_block=spatial_row_block,
             spec=spec,
+            netcdf_variable_chunk_cache_bytes=cache_bytes,
         ),
         "dta": validate_dta_full(
             canonical_source_path,

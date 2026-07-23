@@ -35,6 +35,7 @@ def complete_frozen_v1_fixture(
     runtime = result.setdefault("runtime", {})
     runtime.setdefault("gleam_cell_block_size", 128)
     runtime.setdefault("validation_cell_block_size", 128)
+    runtime.setdefault("validation_netcdf_variable_chunk_cache_bytes", 1_048_576)
     runtime.setdefault("parquet_row_group_size", 262_144)
     runtime.setdefault("storage_dtype", "float64")
     runtime.setdefault("pilot_peak_rss_budget_bytes", 16 * 1024**3)

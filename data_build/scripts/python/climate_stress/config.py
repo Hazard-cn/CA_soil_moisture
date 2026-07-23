@@ -16,6 +16,7 @@ import yaml
 
 
 _ENVIRONMENT_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES = 1_048_576
 
 # These v1 method switches are implemented as code-frozen semantics rather than
 # dynamic algorithm parameters.  Requiring their sole supported value prevents
@@ -266,6 +267,19 @@ def _validate_resource_budgets(data: dict[str, Any]) -> None:
     if budgets["full_peak_rss_budget_bytes"] < budgets["pilot_peak_rss_budget_bytes"]:
         raise ValueError(
             "runtime.full_peak_rss_budget_bytes must be at least the pilot budget"
+        )
+    cache_key = "validation_netcdf_variable_chunk_cache_bytes"
+    cache_bytes = runtime.get(cache_key)
+    if (
+        isinstance(cache_bytes, bool)
+        or not isinstance(cache_bytes, int)
+        or cache_bytes <= 0
+    ):
+        raise ValueError(f"runtime.{cache_key} must be a positive integer")
+    if cache_bytes > MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES:
+        raise ValueError(
+            f"runtime.{cache_key} must be at most "
+            f"{MAX_VALIDATION_NETCDF_VARIABLE_CHUNK_CACHE_BYTES} bytes"
         )
 
 

@@ -146,6 +146,10 @@ def test_formal_config_expands_all_environment_paths_and_hashes_resolution(
     assert first.data["scope"]["spei_2w_numeric"] is True
     assert first.data["scope"]["spei_2w_output"] is True
     assert first.data["spei"]["two_week_endpoint_decision_status"] == "CONFIRMED"
+    assert (
+        first.data["runtime"]["validation_netcdf_variable_chunk_cache_bytes"]
+        == 1_048_576
+    )
     endpoint_a = spei_2w_interval_contracts(
         [date(2019, 7, 15)],
         accumulation_days=first.data["spei"]["two_week_accumulation_days"],
@@ -261,6 +265,42 @@ def test_unsupported_runtime_claims_are_rejected(tmp_path: Path, key: str) -> No
     path = tmp_path / "unsupported-runtime.yaml"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     with pytest.raises(ValueError, match="must be absent"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "cache_bytes",
+    [None, 0, -1, True, 1.5, "1048576"],
+)
+def test_invalid_validation_netcdf_chunk_cache_fails_closed(
+    tmp_path: Path,
+    cache_bytes,
+) -> None:
+    data = make_config(tmp_path).data
+    data["runtime"]["validation_netcdf_variable_chunk_cache_bytes"] = cache_bytes
+    path = tmp_path / "invalid-netcdf-cache.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match="validation_netcdf_variable_chunk_cache_bytes must be a positive integer",
+    ):
+        load_config(path)
+
+
+def test_validation_netcdf_chunk_cache_above_one_mib_fails_closed(
+    tmp_path: Path,
+) -> None:
+    data = make_config(tmp_path).data
+    data["runtime"]["validation_netcdf_variable_chunk_cache_bytes"] = 1_048_577
+    path = tmp_path / "oversized-netcdf-cache.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match=(
+            "validation_netcdf_variable_chunk_cache_bytes must be at most "
+            "1048576 bytes"
+        ),
+    ):
         load_config(path)
 
 

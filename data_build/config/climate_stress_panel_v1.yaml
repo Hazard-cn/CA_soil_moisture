@@ -153,6 +153,7 @@ quality:
 runtime:
   gleam_cell_block_size: 128
   validation_cell_block_size: 128
+  validation_netcdf_variable_chunk_cache_bytes: 1048576
   parquet_row_group_size: 262144
   storage_dtype: float64
   pilot_peak_rss_budget_bytes: 4294967296

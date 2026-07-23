@@ -5,12 +5,12 @@
 - [x] 实现分阶段可恢复CLI、运行锁和资源门禁
 - [x] 实现`full-spei2w-dual-severity`范围内的核心算法、流式聚合和导出，并保留`PARTIAL_SCOPE`负向门禁
 - [x] 完成候选提交单元测试与“合成上游合同＋生产下游完整DAG”集成测试；当前测试结果见本计划末尾验收段
-- [ ] 完成100格点×2010/2016/2019可信pilot（`NEW_RUN_REQUIRED_AFTER_EXPORT_METADATA_FIX`；两条已登记物理run均为只读`failed_quality_gate`，规范可信替代run仍为`NOT_RUN / planned_not_run`）
+- [ ] 完成100格点×2010/2016/2019可信pilot（`NEW_RUN_REQUIRED_AFTER_VALIDATE_MEMORY_FIX`；三条已登记物理run均为只读`failed_quality_gate`，规范可信替代run仍为`NOT_RUN / planned_not_run`）
 - [ ] 完成全量2010—2019构建与格式导出（仅受真实pilot尚未完成的门禁阻断）
 - [ ] 归档独立事实、方法和代码终审（代码/方法审查已执行，发布终审待真实pilot）
 - [x] 更新端点决定与版本谱系；候选提交的实际index仓库政策检查已通过
 
-实施规范以用户于 2026-07-22 批准的 `data-climate-stress-2010-2019-v1` 方案及端点A决定为准；原始数据只读，所有大体量产物写入仓库外不可覆盖运行目录。当前export元数据修复轮只修改代码、测试、谱系和计划状态，不续跑旧候选run、不创建新run、不写外部数据。
+实施规范以用户于 2026-07-22 批准的 `data-climate-stress-2010-2019-v1` 方案及端点A决定为准；原始数据只读，所有大体量产物写入仓库外不可覆盖运行目录。当前validate NetCDF cache与资源修复轮只修改代码、测试、谱系和计划状态，不续跑旧候选run、不创建新run、不写外部数据。
 
 ## 2026-07-22 实施状态
 
@@ -46,6 +46,13 @@
 - export进程的峰值RSS为`4,287,688,704`字节，未超过冻结的4 GiB门槛，但只余`7,278,592`字节（约6.94 MiB），登记为高风险资源观察项；不提高预算、不把余量表述为充足，替代pilot必须重新实测。
 - 该物理run登记为`failed_quality_gate`，`result_manifest`、`public_result`和`run_completed_at`保持空；export `_SUCCESS`只表示stage发布完成，不是最终result manifest或可发布结果。该run只读保留、不补写、不覆盖、不再`--resume`，并且不得运行`validate`。
 - 当前仅修复coverage单位推断、统一`run_identity`传递与validate交叉核对，并补测试和谱系。源码变化后，可信替代pilot必须等待新的监督GO并使用新唯一run-id从`assets`重新执行；独立的规范替代pilot继续保持`planned_not_run`，full仅受该替代pilot尚未通过的门禁阻断。
+
+## 2026-07-23 第四个候选pilot在validate资源门停止
+
+- 新run `pilot-fullscope-a-exportfix-20260723T112218Z`使用提交`29b4052d34932502a38c890f6359755bbdc5e402`，从`assets`执行至`export`并真实关闭四个ERA coverage单位和三份bundle六字段`run_identity`问题。export的12项生产哈希、长宽表键、DTA/NetCDF代表值和元数据合同均通过阶段门。
+- `validate`完成全部379个数值指标、18个year-window分区、四种格式及1,579,402,152个非目标格值的比较，partial报告内部`validation_status=PASS`且最大格式差为0；但Windows进程生命周期峰值为`9,068,961,792`字节，超过冻结的pilot 4 GiB预算，阶段按设计记录`FAILED/StageResourceBudgetError`，没有发布`stages/validate/_SUCCESS.json`。
+- 资源门优先于partial数据报告。该partial报告、export `_SUCCESS`和任何单阶段结果均不登记为最终result manifest；本run登记为`failed_quality_gate`，`result_manifest`、`public_result`和`run_completed_at`保持空。
+- 根因是379个NetCDF cube变量在单一长期打开Dataset中累积默认64 MiB变量chunk cache。当前仅允许将完整NetCDF比较改为按指标批次打开和关闭Dataset，并对实际访问变量设置1 MiB cache上限；不得减少指标、跳过非目标格、抽样替代完整比较或提高4 GiB预算。该run及partial永久只读、不补写、不覆盖、不再`--resume`；修复后须使用新的唯一run-id从`assets`重做。
 
 ## 两级pilot与输出契约
 

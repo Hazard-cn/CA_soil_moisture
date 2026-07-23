@@ -2743,6 +2743,7 @@ def write_integration_config(tmp_path: Path, *, full_scope: bool = False) -> Pat
         },
         "runtime": {
             "gleam_cell_block_size": 1,
+            "validation_netcdf_variable_chunk_cache_bytes": 131_072,
             "parquet_row_group_size": 64,
             "storage_dtype": "float64",
         },
@@ -3818,6 +3819,15 @@ def test_confirmed_full_scope_fixture_publishes_and_validates_2w_contract(
     assert validation["spei_2w_numeric"] is True
     assert validation["spei_2w_output"] is True
     assert validation["gates"]["spei_2w_scope_contract"]["status"] == "PASS"
+    netcdf_gate = validation["gates"]["full_export_roundtrip"]["netcdf"]
+    assert netcdf_gate["netcdf_variable_chunk_cache_bytes"] == 131_072
+    assert netcdf_gate["metric_dataset_batches"] >= 1
+    assert netcdf_gate["max_metrics_per_dataset_open"] <= 8
+    assert (
+        netcdf_gate["chunk_cache_configured_variables"]
+        == netcdf_gate["numeric_columns"]
+    )
+    assert netcdf_gate["max_effective_variable_chunk_cache_bytes"] <= 131_072
     contract = json.loads(
         (bundle / "output_contract.json").read_text(encoding="utf-8")
     )

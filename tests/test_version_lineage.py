@@ -354,7 +354,7 @@ class VersionLineageTests(unittest.TestCase):
             for row in registries["analysis_runs.csv"].rows
             if row["canonical_id"] == "data-climate-stress-2010-2019-v1"
         ]
-        self.assertEqual(len(climate_runs), 3)
+        self.assertEqual(len(climate_runs), 4)
         self.assertEqual(
             sum(
                 row["reproducibility_status"] == "planned_not_run"
@@ -367,7 +367,7 @@ class VersionLineageTests(unittest.TestCase):
                 row["reproducibility_status"] == "failed_quality_gate"
                 for row in climate_runs
             ),
-            2,
+            3,
         )
         failed_runs = {
             row["analysis_run_id"]: row
@@ -379,6 +379,7 @@ class VersionLineageTests(unittest.TestCase):
             {
                 "run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001",
                 "run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913",
+                "run-data-climate-stress-panel-v1-pilot-fullscope-a-exportfix-20260723T112218Z",
             },
         )
         expected_failed_execution = {
@@ -389,6 +390,10 @@ class VersionLineageTests(unittest.TestCase):
             "run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913": (
                 "46800627b7bab0e94a96eaff524c450cf98916e9",
                 "2026-07-23T05:53:24.927504Z",
+            ),
+            "run-data-climate-stress-panel-v1-pilot-fullscope-a-exportfix-20260723T112218Z": (
+                "29b4052d34932502a38c890f6359755bbdc5e402",
+                "2026-07-23T11:24:17.380865Z",
             ),
         }
         for run_id, (code_sha, started_at) in expected_failed_execution.items():
@@ -405,6 +410,16 @@ class VersionLineageTests(unittest.TestCase):
             self.assertEqual(failed["run_started_at"], started_at)
             for field in ("result_manifest", "public_result", "run_completed_at"):
                 self.assertEqual(failed[field], "")
+        version = next(
+            row
+            for row in registries["version_registry.csv"].rows
+            if row["canonical_id"] == "data-climate-stress-2010-2019-v1"
+        )
+        self.assertEqual(
+            version["current_truth_role"],
+            "three_physical_pilots_failed_quality_gate_replacement_planned",
+        )
+        self.assertEqual(version["result_run_date"], "")
 
         artifacts = {
             row["artifact_id"]: row
