@@ -27,8 +27,12 @@ import pandas as pd
 from .config import PipelineConfig, load_config
 from .core import SPEI_2W_PENDING_STATUS
 from .runtime import (
+    PathOutsideRunError,
+    RunLock,
     RunContext,
+    STAGE_SUCCESS,
     StageSession,
+    atomic_output,
     complete_stage,
     ensure_within_run,
     exclusive_run_lock,
@@ -110,6 +114,50 @@ class StageValidationError(RuntimeError):
 
 class StageResourceBudgetError(StageValidationError):
     """Raised before publication when process peak RSS exceeds the mode budget."""
+
+
+class StageAttemptAuditError(RuntimeError):
+    """Raised when a global or partial stage-failure record cannot publish."""
+
+    def __init__(
+        self,
+        phase: str,
+        audit_error: BaseException,
+        *,
+        published_audit_path: Path | None,
+    ) -> None:
+        super().__init__(
+            f"{phase} persistence failed: {type(audit_error).__name__}: "
+            f"{audit_error}"
+        )
+        self.phase = phase
+        self.audit_error = audit_error
+        self.published_audit_path = published_audit_path
+
+
+@dataclass(frozen=True)
+class InvocationAuditIssue:
+    phase: str
+    error: BaseException
+    published_audit_path: Path | None = None
+
+    def as_payload(self) -> dict[str, Any]:
+        exception = _exception_payload(self.error) or {}
+        return {
+            "phase": self.phase,
+            "error": {
+                "type": exception.get("type", "BaseException"),
+                "message": exception.get(
+                    "message",
+                    "<exception message unavailable>",
+                ),
+            },
+            "published_audit_path": (
+                None
+                if self.published_audit_path is None
+                else str(self.published_audit_path)
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -343,6 +391,564 @@ def _write_json_new(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
+    )
+
+
+def _write_json_atomic_new(
+    path: Path,
+    payload: Mapping[str, Any],
+    *,
+    evidence_root: Path,
+) -> None:
+    """Atomically publish one immutable invocation record below its evidence root."""
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    ).encode("utf-8")
+    with atomic_output(path, evidence_root) as partial:
+        with partial.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
+def _initialization_evidence_root(
+    config: PipelineConfig,
+    *,
+    run_id: str,
+    invocation_id: str,
+    exc: BaseException,
+) -> tuple[Path, str]:
+    """Choose an existing run, its incomplete init tree, or a safe fallback."""
+
+    output_root = config.output_root.resolve(strict=False)
+    run_root = (output_root / run_id).resolve(strict=False)
+    try:
+        relative_run_root = run_root.relative_to(output_root)
+    except ValueError:
+        relative_run_root = None
+    audit_root = (run_root / "audit").resolve(strict=False)
+    try:
+        relative_audit_root = audit_root.relative_to(run_root)
+    except ValueError:
+        relative_audit_root = None
+    if (
+        relative_run_root is not None
+        and relative_run_root.parts == (run_id,)
+        and relative_audit_root is not None
+        and relative_audit_root.parts == ("audit",)
+        and run_root.is_dir()
+        and audit_root.is_dir()
+    ):
+        return run_root, "existing_run"
+
+    attached = getattr(exc, "initialization_audit_context", {})
+    raw_evidence = (
+        attached.get("initialization_evidence_dir")
+        if isinstance(attached, Mapping)
+        else None
+    )
+    if raw_evidence:
+        candidate: Path | None = Path(str(raw_evidence)).resolve(strict=False)
+        try:
+            relative_candidate = candidate.relative_to(output_root)
+        except ValueError:
+            candidate = None
+        else:
+            expected_prefix = f".{run_id}.{invocation_id}."
+            if (
+                len(relative_candidate.parts) != 1
+                or not candidate.name.startswith(expected_prefix)
+                or not candidate.name.endswith(".initializing.incomplete")
+            ):
+                candidate = None
+        if candidate is not None and candidate.is_dir():
+            return candidate, "initialization_incomplete"
+
+    fallback = (output_root / ".run-invocations" / run_id / invocation_id).resolve(
+        strict=False
+    )
+    relative_fallback = fallback.relative_to(output_root)
+    if relative_fallback.parts != (".run-invocations", run_id, invocation_id):
+        raise PathOutsideRunError(
+            "Resolved initialization fallback is not the dedicated audit path: "
+            f"{fallback}"
+        )
+    fallback.mkdir(parents=True, exist_ok=False)
+    return fallback, "output_root_fallback"
+
+
+@dataclass(frozen=True)
+class InitializationFailureEvidence:
+    evidence_root: Path
+    evidence_location: str
+    failure_path: Path
+    quality_path: Path
+    quality_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PreparedQualitySummary:
+    """Immutable invocation payload frozen while the run lease is held."""
+
+    target: Path
+    evidence_root: Path
+    payload: dict[str, Any]
+
+
+def _snapshot_quality_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Detach a JSON-safe deep snapshot from mutable pipeline state."""
+
+    return json.loads(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+
+
+def _write_initialization_failure_records(
+    config: PipelineConfig,
+    scope: "ExecutionScope",
+    *,
+    run_id: str,
+    requested_stage: str,
+    resume: bool,
+    invocation_id: str,
+    invocation_started_at_utc: str,
+    initialization_started_at_utc: str,
+    lease: RunLock,
+    exc: BaseException,
+    exit_status: int = 2,
+) -> InitializationFailureEvidence:
+    """Persist the failure record and defer the unique summary until release."""
+
+    evidence_root, evidence_location = _initialization_evidence_root(
+        config,
+        run_id=run_id,
+        invocation_id=invocation_id,
+        exc=exc,
+    )
+    audit_root = evidence_root / "audit"
+    failure_path = (
+        audit_root
+        / "initialization_failures"
+        / f"initialization_failure.{invocation_id}.json"
+    )
+    quality_path = (
+        audit_root
+        / "quality_summaries"
+        / f"run_quality_summary.{invocation_id}.json"
+    )
+    failed_at = utc_now()
+    acquired_name = f"{run_id}.acquired.{lease.lease_id}.json"
+    released_name = f"{run_id}.released.{lease.lease_id}.json"
+    lock_root = lease.path.parent
+    output_root = config.output_root.resolve(strict=False)
+    acquired_path = lock_root / acquired_name
+    released_path = lock_root / released_name
+    lease_record = {
+        "lease_id": lease.lease_id,
+        "owner": lease.metadata.get("owner"),
+        "pid": lease.metadata.get("pid"),
+        "hostname": lease.metadata.get("hostname"),
+        "acquired_at_utc": lease.metadata.get("acquired_at_utc"),
+        "acquired_audit": acquired_path.relative_to(output_root).as_posix(),
+        "release_audit_expected": released_path.relative_to(output_root).as_posix(),
+        "release_occurs_after_failure_record": True,
+    }
+    initialization_context = getattr(exc, "initialization_audit_context", {})
+    if not isinstance(initialization_context, Mapping):
+        initialization_context = {}
+    requested_signatures = dict(
+        initialization_context.get("requested_signatures", {})
+    )
+    exception_record = _exception_payload(exc) or {}
+    scope_parameters = scope.as_parameters()
+    common = {
+        "schema_version": 1,
+        "invocation_id": invocation_id,
+        "run_id": run_id,
+        "requested_stage": requested_stage,
+        "requested_scope": scope_parameters,
+        "resume": bool(resume),
+        "failure_phase": "INITIALIZE_RUN",
+        "execution_status": "FAILED",
+        "invocation_status": "FAILED",
+        "stage_execution_status": "NOT_STARTED",
+        "exit_status": int(exit_status),
+        "scope_profile": config.scope_profile,
+        "completion_scope_status": config.completion_scope_status,
+        "invocation_started_at_utc": invocation_started_at_utc,
+        "initialization_started_at_utc": initialization_started_at_utc,
+        "failed_at_utc": failed_at,
+        "evidence_written_at_utc": failed_at,
+        "config_sha256": config.sha256,
+        "template_config_sha256": config.template_sha256 or config.sha256,
+        "effective_config_sha256": config.sha256,
+        "code_git_commit": initialization_context.get("code_git_commit"),
+        "parameter_sha256": parameter_signature(scope_parameters),
+        "source_tree_sha256": requested_signatures.get("source_tree_sha256"),
+        "environment_sha256": requested_signatures.get("environment_sha256"),
+        "requested_signatures": requested_signatures,
+        "observed_signatures": dict(
+            initialization_context.get("observed_signatures", {})
+        ),
+        "initialization_evidence_dir": initialization_context.get(
+            "initialization_evidence_dir"
+        ),
+        "evidence_location": evidence_location,
+        "lease": lease_record,
+        "exception": exception_record,
+        "stage_attempt_created": False,
+        "stage_partial_created": False,
+        "capture_mode": "automatic_runtime",
+        "retrospective": False,
+    }
+    _write_json_atomic_new(
+        failure_path,
+        common,
+        evidence_root=evidence_root,
+    )
+    quality_payload = {
+        **common,
+        "status": config.completion_scope_status,
+        "spei_2w_numeric_enabled": bool(
+            config.data["scope"]["spei_2w_numeric"]
+        ),
+        "spei_2w_output_enabled": bool(
+            config.data["scope"]["spei_2w_output"]
+        ),
+        "spei_2w_numeric_executed": False,
+        "spei_2w_output_included": False,
+        "compound_mode": str(config.data["scope"]["compound_mode"]),
+        "created_at_utc": failed_at,
+        "resolved_paths": config.resolved_paths(),
+        "parameters": {
+            "run": scope_parameters,
+            "stage": {"stage": requested_stage, **scope_parameters},
+        },
+        "stages": [],
+        "initialization_failure_audit": failure_path.relative_to(
+            evidence_root
+        ).as_posix(),
+    }
+    return InitializationFailureEvidence(
+        evidence_root=evidence_root,
+        evidence_location=evidence_location,
+        failure_path=failure_path,
+        quality_path=quality_path,
+        quality_payload=quality_payload,
+    )
+
+
+def _initialization_exit_status(exc: BaseException) -> int:
+    """Return a non-success process status for an incomplete invocation."""
+
+    if isinstance(exc, KeyboardInterrupt):
+        return 130
+    if isinstance(exc, SystemExit):
+        if exc.code is None or exc.code == 0:
+            return 2
+        return int(exc.code) if isinstance(exc.code, int) else 1
+    return 2 if isinstance(exc, Exception) else 1
+
+
+def _normalize_incomplete_exit_status(exc: BaseException) -> int:
+    """Prevent an unfinished initialization or stage from exiting successfully."""
+
+    status = _initialization_exit_status(exc)
+    if isinstance(exc, SystemExit) and (exc.code is None or exc.code == 0):
+        exc.code = status
+    return status
+
+
+def _annotate_failure_phase(exc: BaseException, phase: str) -> None:
+    """Attach a stable phase label without changing the active exception."""
+
+    try:
+        if not getattr(exc, "failure_phase", None):
+            setattr(exc, "failure_phase", phase)
+    except (AttributeError, TypeError):
+        pass
+
+
+def _add_note_without_masking(exc: BaseException, note: str) -> None:
+    """Best-effort exception annotation that can never replace the cause."""
+
+    try:
+        exc.add_note(note)
+    except BaseException:
+        pass
+
+
+def _safe_exception_description(exc: BaseException) -> str:
+    """Describe an exception without trusting its potentially hostile __str__."""
+
+    try:
+        name = type(exc).__name__
+    except BaseException:
+        name = "BaseException"
+    try:
+        message = str(exc)
+    except BaseException:
+        message = "<exception message unavailable>"
+    try:
+        return f"{name}: {message}"
+    except BaseException:
+        return "BaseException: <exception description unavailable>"
+
+
+def _report_audit_failure(
+    *,
+    errors: TextIO,
+    original: BaseException,
+    phase: str,
+    audit_error: BaseException,
+) -> None:
+    """Expose an audit-write failure without replacing the active exception."""
+
+    try:
+        warning = (
+            f"{phase} audit persistence failed; durable evidence is absent or "
+            "incomplete and must not be treated as a completed audit; preserving "
+            f"{_safe_exception_description(original)}; audit_error="
+            f"{_safe_exception_description(audit_error)}"
+        )
+    except BaseException:
+        return
+    _add_note_without_masking(original, warning)
+    _emit_warning_without_masking(
+        errors,
+        f"AUDIT_WARNING: {warning}",
+        original=original,
+    )
+
+
+def _emit_warning_without_masking(
+    errors: TextIO,
+    message: str,
+    *,
+    original: BaseException,
+) -> None:
+    """Report an audit warning without letting the reporter replace the cause."""
+
+    try:
+        print(message, file=errors)
+    except BaseException as reporting_error:
+        reporting_note = (
+            "Failed to emit the audit warning while preserving the active "
+            f"{_safe_exception_description(original)}; reporter_error="
+            f"{_safe_exception_description(reporting_error)}"
+        )
+        _add_note_without_masking(original, reporting_note)
+        fallback = sys.__stderr__
+        if fallback is None or fallback is errors:
+            return
+        try:
+            print(f"AUDIT_WARNING: {reporting_note}", file=fallback)
+        except BaseException as fallback_error:
+            _add_note_without_masking(
+                original,
+                "Failed to emit the fallback audit warning: "
+                f"{_safe_exception_description(fallback_error)}"
+            )
+
+
+def _exception_payload(exc: BaseException | None) -> dict[str, Any] | None:
+    if exc is None:
+        return None
+    try:
+        exception_type = type(exc).__name__
+    except BaseException:
+        exception_type = "BaseException"
+    try:
+        message = str(exc)
+    except BaseException:
+        message = "<exception message unavailable>"
+    try:
+        formatted_traceback = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+    except BaseException:
+        formatted_traceback = "<traceback unavailable>"
+    return {
+        "type": exception_type,
+        "message": message,
+        "traceback": formatted_traceback,
+    }
+
+
+def _lease_quality_record(
+    lease: RunLock,
+    output_root: Path,
+) -> dict[str, Any]:
+    lock_root = lease.path.parent
+    acquired = lock_root / (
+        f"{lease.metadata['run_id']}.acquired.{lease.lease_id}.json"
+    )
+    released = lock_root / (
+        f"{lease.metadata['run_id']}.released.{lease.lease_id}.json"
+    )
+    os_lease_terminal = bool(
+        lease.os_unlock_succeeded and lease.handle_closed
+    )
+    return {
+        "lease_id": lease.lease_id,
+        "owner": lease.metadata.get("owner"),
+        "pid": lease.metadata.get("pid"),
+        "hostname": lease.metadata.get("hostname"),
+        "acquired_at_utc": lease.metadata.get("acquired_at_utc"),
+        "release_attempted_at_utc": lease.release_attempted_at_utc,
+        "release_terminal_at_utc": lease.release_terminal_at_utc,
+        "released_at_utc": lease.released_at_utc,
+        "release_attempted": bool(lease.release_attempted),
+        "released": bool(lease.released),
+        "release_workflow_succeeded": bool(lease.released),
+        "os_lease_terminal": os_lease_terminal,
+        "release_audit_persisted": lease.release_audit_persisted,
+        "release_timestamp_recorded": lease.release_timestamp_recorded,
+        "os_unlock_succeeded": lease.os_unlock_succeeded,
+        "handle_closed": lease.handle_closed,
+        "acquired_audit": acquired.relative_to(output_root).as_posix(),
+        "release_audit_expected": released.relative_to(output_root).as_posix(),
+        "release_audit_present": released.is_file(),
+    }
+
+
+def _report_release_failure(
+    *,
+    errors: TextIO,
+    primary: BaseException,
+    release_error: BaseException,
+) -> None:
+    try:
+        warning = (
+            "run-lock release evidence or unlock failed; durable lease evidence is "
+            "absent or incomplete; preserving "
+            f"{_safe_exception_description(primary)}; release_error="
+            f"{_safe_exception_description(release_error)}"
+        )
+    except BaseException:
+        return
+    _add_note_without_masking(primary, warning)
+    _emit_warning_without_masking(
+        errors,
+        f"AUDIT_WARNING: {warning}",
+        original=primary,
+    )
+
+
+def _publish_quality_summary(
+    prepared: PreparedQualitySummary,
+    *,
+    invocation_status: str,
+    stage_execution_status: str,
+    failure_phase: str | None,
+    primary_exception: BaseException | None,
+    release_exception: BaseException | None,
+    exit_status: int,
+    lease: RunLock,
+    output_root: Path,
+) -> Path:
+    """Add lease terminal state and publish one no-overwrite summary."""
+
+    authoritative = primary_exception or release_exception
+    payload = {
+        **prepared.payload,
+        "execution_status": invocation_status,
+        "invocation_status": invocation_status,
+        "stage_execution_status": stage_execution_status,
+        "failure_phase": failure_phase,
+        "exit_status": int(exit_status),
+        "exception": _exception_payload(authoritative),
+        "primary_exception": _exception_payload(primary_exception),
+        "release_exception": _exception_payload(release_exception),
+        "lease": _lease_quality_record(lease, output_root),
+        "summary_written_after_lease_release_attempt": bool(
+            lease.release_attempted
+        ),
+        "summary_written_after_os_lease_terminal": bool(
+            lease.os_unlock_succeeded and lease.handle_closed
+        ),
+        "summary_written_after_successful_release_workflow": bool(
+            lease.released
+        ),
+        "summary_written_after_lease_release": bool(lease.released),
+        "shared_stage_artifacts_modified_by_summary": False,
+    }
+    _write_json_atomic_new(
+        prepared.target,
+        payload,
+        evidence_root=prepared.evidence_root,
+    )
+    return prepared.target
+
+
+def _prepare_context_failure_summary(
+    *,
+    config: PipelineConfig,
+    context: RunContext,
+    scope: "ExecutionScope",
+    invocation_id: str,
+    requested_stage: str,
+    resume: bool,
+    failure_phase: str,
+    primary_exception: BaseException | None,
+    release_exception: BaseException | None,
+    exit_status: int,
+) -> PreparedQualitySummary:
+    """Freeze a setup-failure summary before the run lease is released."""
+
+    target = (
+        context.audit_dir
+        / "quality_summaries"
+        / f"run_quality_summary.{invocation_id}.json"
+    )
+    authoritative = primary_exception or release_exception
+    payload = {
+        "schema_version": 1,
+        "invocation_id": invocation_id,
+        "run_id": context.run_id,
+        "requested_stage": requested_stage,
+        "requested_scope": scope.as_parameters(),
+        "resume": bool(resume),
+        "execution_status": "FAILED",
+        "invocation_status": "FAILED",
+        "stage_execution_status": "NOT_STARTED",
+        "failure_phase": failure_phase,
+        "exit_status": int(exit_status),
+        "status": context.completion_scope_status,
+        "scope_profile": context.scope_profile,
+        "completion_scope_status": context.completion_scope_status,
+        "created_at_utc": utc_now(),
+        "config_sha256": config.sha256,
+        "template_config_sha256": config.template_sha256 or config.sha256,
+        "effective_config_sha256": config.sha256,
+        "resolved_paths": config.resolved_paths(),
+        "parameter_sha256": context.parameter_sha256,
+        "source_tree_sha256": context.source_tree_sha256,
+        "environment_sha256": context.environment_sha256,
+        "code_git_commit": context.code_git_commit,
+        "stages": [],
+        "exception": _exception_payload(authoritative),
+        "primary_exception": _exception_payload(primary_exception),
+        "release_exception": _exception_payload(release_exception),
+        "audit_issues": [],
+        "diagnostic_issues": [],
+        "capture_mode": "automatic_runtime",
+        "retrospective": False,
+    }
+    return PreparedQualitySummary(
+        target=target,
+        evidence_root=context.run_dir,
+        payload=_snapshot_quality_payload(payload),
     )
 
 
@@ -4907,8 +5513,26 @@ class ClimateStressPipeline:
     scope: ExecutionScope
     handlers: Mapping[str, StageHandler] = field(default_factory=default_handlers)
     resume: bool = False
-    invocation_id: str = field(default_factory=lambda: uuid.uuid4().hex, init=False)
+    invocation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     quality_records: list[dict[str, Any]] = field(default_factory=list, init=False)
+    audit_issues: list[InvocationAuditIssue] = field(default_factory=list, init=False)
+    diagnostic_issues: list[InvocationAuditIssue] = field(
+        default_factory=list,
+        init=False,
+    )
+    active_stage_partials: dict[str, Path | None] = field(
+        default_factory=dict,
+        init=False,
+    )
+    authoritative_stage_markers: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+    )
+    completed_run_results: list[dict[str, Any]] = field(
+        default_factory=list,
+        init=False,
+    )
+    requested_stage_execution_completed: bool = field(default=False, init=False)
 
     def stage_parameters(self, stage: str) -> dict[str, Any]:
         return {"stage": stage, **self.scope.as_parameters()}
@@ -5162,6 +5786,64 @@ class ClimateStressPipeline:
         )
         return resources
 
+    def _unavailable_stage_resources(
+        self,
+        reason: BaseException,
+        *,
+        start: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return a complete fail-closed resource record without resampling."""
+
+        sampled_at = utc_now()
+        start_record = dict(start or {})
+        start_rss = max(0, int(start_record.get("rss_bytes", 0)))
+        start_peak = max(
+            start_rss,
+            int(start_record.get("process_peak_rss_bytes", 0)),
+        )
+        budget = self.config.peak_rss_budget_bytes(self.scope.mode)
+        return {
+            "stage_start_current_rss_bytes": start_rss,
+            "stage_end_current_rss_bytes": 0,
+            "process_lifetime_peak_working_set_bytes": start_peak,
+            "sampled_start_at_utc": str(
+                start_record.get("sampled_at_utc", sampled_at)
+            ),
+            "sampled_end_at_utc": sampled_at,
+            "start_source": str(start_record.get("source", "unavailable")),
+            "end_source": "unavailable",
+            "execution_mode": self.scope.mode,
+            "peak_rss_budget_bytes": budget,
+            "budget_exceeded": start_peak > budget,
+            "resource_sampling_available": False,
+            "resource_sampling_error": {
+                "type": type(reason).__name__,
+                "message": str(reason),
+            },
+        }
+
+    @staticmethod
+    def _unavailable_resource_workload(
+        stage: str,
+        reason: BaseException,
+    ) -> dict[str, Any]:
+        """Return a stable workload record when diagnostic construction fails."""
+
+        return {
+            "stage": stage,
+            "configured_block_chunk_parameters": {},
+            "configured_block_chunk_shapes": {},
+            "estimated_block_bytes": {},
+            "estimation_note": "Unavailable after diagnostic failure.",
+            "artifact_bytes": {},
+            "stage_outcome_extra": {},
+            "diagnostic_available": False,
+            "diagnostic_error": {
+                "type": type(reason).__name__,
+                "message": str(reason),
+            },
+        }
+
     @staticmethod
     def _prior_attempt_resources(work_dir: Path) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -5277,20 +5959,63 @@ class ClimateStressPipeline:
         stage: str,
         resource_start: Mapping[str, Any],
     ) -> dict[str, Any]:
+        self.active_stage_partials[stage] = None
         handler = self.handlers.get(stage)
         if handler is None:
-            raise StageUnavailableError(f"No handler is registered for stage {stage}")
-        input_hashes = self._input_hashes(stage)
-        session, resumed_partial = self._start_or_resume_partial(
-            stage, input_hashes=input_hashes
-        )
+            error = StageUnavailableError(
+                f"No handler is registered for stage {stage}"
+            )
+            _annotate_failure_phase(error, "STAGE_SETUP")
+            raise error
+        try:
+            input_hashes = self._input_hashes(stage)
+            session, resumed_partial = self._start_or_resume_partial(
+                stage, input_hashes=input_hashes
+            )
+        except BaseException as exc:
+            _annotate_failure_phase(exc, "STAGE_SETUP")
+            raise
         if session.skipped:
-            self._verify_completed_stage(stage, session.marker or {})
-            return {
-                "stage": stage,
-                "status": "SKIPPED_SUCCESS_MARKER",
-                "marker": session.marker,
-            }
+            verified_marker: dict[str, Any] | None = None
+            try:
+                self._verify_completed_stage(stage, session.marker or {})
+                verified_marker = dict(session.marker or {})
+                self.authoritative_stage_markers[stage] = verified_marker
+                return {
+                    "stage": stage,
+                    "status": "SKIPPED_SUCCESS_MARKER",
+                    "marker": verified_marker,
+                }
+            except BaseException as exc:
+                if verified_marker is not None:
+                    _annotate_failure_phase(exc, "STAGE_POST_VERIFY")
+                    try:
+                        setattr(exc, "stage_execution_status", "COMPLETED")
+                        setattr(exc, "published_stage_marker", verified_marker)
+                    except (AttributeError, TypeError):
+                        pass
+                elif not isinstance(exc, Exception):
+                    # start_stage already parsed and signature-checked this
+                    # immutable marker; a control-flow signal during the deeper
+                    # artifact verification must not turn the existing success
+                    # into a failed stage attempt.
+                    _annotate_failure_phase(exc, "STAGE_RESUME_VERIFY")
+                    existing_marker = dict(session.marker or {})
+                    self.authoritative_stage_markers[stage] = existing_marker
+                    try:
+                        setattr(exc, "stage_execution_status", "COMPLETED")
+                        setattr(
+                            exc,
+                            "published_stage_marker",
+                            existing_marker,
+                        )
+                        setattr(exc, "resume_verification_completed", False)
+                    except (AttributeError, TypeError):
+                        pass
+                else:
+                    _annotate_failure_phase(exc, "STAGE_RESUME_VERIFY")
+                raise
+        self.active_stage_partials[stage] = session.work_dir
         prior_attempt_resources = self._prior_attempt_resources(session.work_dir)
         if any(
             bool(record.get("budget_exceeded", False))
@@ -5327,11 +6052,16 @@ class ClimateStressPipeline:
                 session.work_dir / STAGE_START,
                 self._stage_start_payload(stage, input_hashes=input_hashes),
             )
+            self.active_stage_partials[stage] = session.work_dir
             request = StageRequest(self, session)
             resumed_partial = False
             restarted_after_partial = True
         if outcome is None:
-            outcome = handler(request)
+            try:
+                outcome = handler(request)
+            except BaseException as exc:
+                _annotate_failure_phase(exc, "STAGE_HANDLER")
+                raise
         if not isinstance(outcome, StageOutcome):
             raise TypeError(f"Stage handler {stage} must return StageOutcome")
         artifact_paths: dict[str, Path] = {}
@@ -5392,41 +6122,114 @@ class ClimateStressPipeline:
             error.resources = resources
             error.resource_workload = workload
             raise error
-        marker = complete_stage(
-            session,
-            input_hashes=input_hashes,
-            output_hashes=output_hashes,
-            row_counts=outcome.row_counts,
-            extra={
-                **outcome.extra,
-                "resources": resources,
-                "resource_workload": workload,
-                "resumed_partial": resumed_partial,
-                "recovered_stage_result": recovered_stage_result,
-                "restarted_after_preserved_partial": restarted_after_partial,
-                "artifacts": {
-                    name: str(Path("stages") / stage / relative)
-                    for name, relative in relative_artifacts.items()
+        marker: dict[str, Any] | None = None
+        try:
+            marker = complete_stage(
+                session,
+                input_hashes=input_hashes,
+                output_hashes=output_hashes,
+                row_counts=outcome.row_counts,
+                extra={
+                    **outcome.extra,
+                    "resources": resources,
+                    "resource_workload": workload,
+                    "resumed_partial": resumed_partial,
+                    "recovered_stage_result": recovered_stage_result,
+                    "restarted_after_preserved_partial": restarted_after_partial,
+                    "artifacts": {
+                        name: str(Path("stages") / stage / relative)
+                        for name, relative in relative_artifacts.items()
+                    },
                 },
-            },
-            resources=resources,
-            resource_workload=workload,
-        )
-        final_artifacts = {
-            name: self.context.stages_dir / stage / relative
-            for name, relative in relative_artifacts.items()
-        }
-        return {
-            "stage": stage,
-            "status": "COMPLETED",
-            "marker": marker,
-            "artifacts": {name: str(path) for name, path in final_artifacts.items()},
-        }
+                resources=resources,
+                resource_workload=workload,
+            )
+            self.active_stage_partials[stage] = None
+            self.authoritative_stage_markers[stage] = marker
+            final_artifacts = {
+                name: self.context.stages_dir / stage / relative
+                for name, relative in relative_artifacts.items()
+            }
+            return {
+                "stage": stage,
+                "status": "COMPLETED",
+                "marker": marker,
+                "artifacts": {
+                    name: str(path) for name, path in final_artifacts.items()
+                },
+            }
+        except BaseException as exc:
+            published_marker = (
+                marker
+                if marker is not None
+                else (
+                    getattr(exc, "published_stage_marker", None)
+                    or self._published_marker_after_interruption(
+                        session,
+                        stage=stage,
+                        input_hashes=input_hashes,
+                        output_hashes=output_hashes,
+                    )
+                )
+            )
+            if published_marker is not None:
+                self.active_stage_partials[stage] = None
+                self.authoritative_stage_markers[stage] = dict(published_marker)
+                _annotate_failure_phase(exc, "STAGE_POST_PUBLISH")
+                try:
+                    setattr(exc, "stage_execution_status", "COMPLETED")
+                    setattr(exc, "published_stage_marker", published_marker)
+                except (AttributeError, TypeError):
+                    pass
+            raise
+
+    def _published_marker_after_interruption(
+        self,
+        session: StageSession,
+        *,
+        stage: str,
+        input_hashes: Mapping[str, str],
+        output_hashes: Mapping[str, str],
+    ) -> dict[str, Any] | None:
+        """Recognize a stage atomically published before a control-flow signal."""
+
+        try:
+            marker_path = session.target_dir / STAGE_SUCCESS
+            if not session.target_dir.is_dir() or not marker_path.is_file():
+                return None
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            observed = (
+                marker.get("stage"),
+                marker.get("config_sha256"),
+                marker.get("parameter_sha256"),
+                marker.get("source_tree_sha256"),
+                marker.get("environment_sha256"),
+                marker.get("input_hashes"),
+                marker.get("output_hashes"),
+            )
+            expected = (
+                stage,
+                self.config.sha256,
+                session.parameter_sha256,
+                self.context.source_tree_sha256,
+                self.context.environment_sha256,
+                dict(sorted(input_hashes.items())),
+                dict(sorted(output_hashes.items())),
+            )
+            return marker if observed == expected else None
+        except BaseException as diagnostic_error:
+            self.diagnostic_issues.append(
+                InvocationAuditIssue(
+                    phase="stage post-publish marker verification",
+                    error=diagnostic_error,
+                )
+            )
+            return None
 
     def _record_failed_attempt(
         self,
         stage: str,
-        exc: Exception,
+        exc: BaseException,
         *,
         resources: Mapping[str, Any],
         resource_workload: Mapping[str, Any],
@@ -5438,7 +6241,13 @@ class ClimateStressPipeline:
             self.context.stages_dir.glob(f".{stage}.*.partial"),
             key=lambda path: path.stat().st_mtime_ns,
         )
-        active_partial = candidates[-1] if candidates else None
+        active_partial = self.active_stage_partials.get(stage)
+        if active_partial is not None and (
+            not active_partial.is_dir()
+            or active_partial.parent != self.context.stages_dir
+            or active_partial not in candidates
+        ):
+            active_partial = None
         payload = {
             "schema_version": 1,
             "attempt_id": attempt_id,
@@ -5447,10 +6256,18 @@ class ClimateStressPipeline:
             "scope_profile": self.context.scope_profile,
             "completion_scope_status": self.context.completion_scope_status,
             "failed_at_utc": utc_now(),
-            "exception_type": type(exc).__name__,
-            "exception_message": str(exc),
-            "traceback": "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            "exception_type": (_exception_payload(exc) or {}).get(
+                "type",
+                "BaseException",
+            ),
+            "exception_message": (_exception_payload(exc) or {}).get(
+                "message",
+                "<exception message unavailable>",
+            ),
+            "exit_status": _initialization_exit_status(exc),
+            "traceback": (_exception_payload(exc) or {}).get(
+                "traceback",
+                "<traceback unavailable>",
             ),
             "config_sha256": self.config.sha256,
             "template_config_sha256": (
@@ -5474,29 +6291,139 @@ class ClimateStressPipeline:
                 path.relative_to(self.context.run_dir).as_posix()
                 for path in candidates
             ],
+            "partial_mirror_selection": "current_stage_session_only",
             "resources": dict(resources),
             "resource_workload": dict(resource_workload),
         }
         attempts_dir = self.context.audit_dir / "attempts"
         audit_path = attempts_dir / f"{stage}.{attempt_id}.failed.json"
-        _write_json_new(audit_path, payload)
+        try:
+            _write_json_new(audit_path, payload)
+        except BaseException as audit_error:
+            raise StageAttemptAuditError(
+                "stage attempt global audit",
+                audit_error,
+                published_audit_path=None,
+            ) from audit_error
         if active_partial is not None:
-            _write_json_new(
-                active_partial / f"_FAILED.{attempt_id}.json", payload
-            )
+            try:
+                _write_json_new(
+                    active_partial / f"_FAILED.{attempt_id}.json", payload
+                )
+            except BaseException as audit_error:
+                raise StageAttemptAuditError(
+                    "stage attempt partial mirror",
+                    audit_error,
+                    published_audit_path=audit_path,
+                ) from audit_error
         return audit_path
 
     def run_one(self, stage: str) -> dict[str, Any]:
-        resource_start = process_memory_snapshot()
+        resource_start: Mapping[str, Any] | None = None
         try:
+            try:
+                resource_start = process_memory_snapshot()
+            except BaseException as exc:
+                _annotate_failure_phase(exc, "STAGE_RESOURCE_START")
+                raise
             result = self._run_one_impl(stage, resource_start)
-        except Exception as exc:
-            resources = getattr(exc, "resources", None) or self._stage_resources(
-                resource_start
+        except BaseException as exc:
+            exit_status = _normalize_incomplete_exit_status(exc)
+            _annotate_failure_phase(exc, "STAGE_EXECUTION")
+            published_marker = (
+                getattr(exc, "published_stage_marker", None)
+                or self.authoritative_stage_markers.get(stage)
             )
-            workload = getattr(exc, "resource_workload", None) or self._resource_workload(
-                stage
-            )
+            if isinstance(published_marker, Mapping):
+                resume_verification_completed = getattr(
+                    exc,
+                    "resume_verification_completed",
+                    None,
+                )
+                published_record = {
+                        "stage": stage,
+                        "execution_status": "COMPLETED",
+                        "failure_phase": getattr(
+                            exc,
+                            "failure_phase",
+                            "STAGE_POST_PUBLISH",
+                        ),
+                        "invocation_interrupted_after_stage_publish": (
+                            resume_verification_completed is None
+                        ),
+                        "resume_verification_completed": (
+                            resume_verification_completed
+                        ),
+                        "exit_status": exit_status,
+                        "exception": _exception_payload(exc),
+                        "resources": dict(
+                            published_marker.get("resources", {})
+                        ),
+                        "resource_workload": dict(
+                            published_marker.get("resource_workload", {})
+                        ),
+                        "failure_audit": None,
+                    }
+                try:
+                    self.quality_records.append(published_record)
+                except BaseException as record_error:
+                    self.audit_issues.append(
+                        InvocationAuditIssue(
+                            phase="stage quality record",
+                            error=record_error,
+                        )
+                    )
+                    _add_note_without_masking(
+                        exc,
+                        "Failed to preserve the completed stage quality record: "
+                        f"{_safe_exception_description(record_error)}",
+                    )
+                raise
+            resources = getattr(exc, "resources", None)
+            if not resources:
+                if resource_start is None:
+                    resources = self._unavailable_stage_resources(exc)
+                else:
+                    try:
+                        resources = self._stage_resources(resource_start)
+                    except BaseException as diagnostic_error:
+                        issue = InvocationAuditIssue(
+                            phase="stage resource final sample",
+                            error=diagnostic_error,
+                        )
+                        self.diagnostic_issues.append(issue)
+                        _add_note_without_masking(
+                            exc,
+                            "Failed to finalize stage resource evidence while "
+                            f"preserving {_safe_exception_description(exc)}; "
+                            "diagnostic_error="
+                            f"{_safe_exception_description(diagnostic_error)}"
+                        )
+                        resources = self._unavailable_stage_resources(
+                            diagnostic_error,
+                            start=resource_start,
+                        )
+            workload = getattr(exc, "resource_workload", None)
+            if not workload:
+                try:
+                    workload = self._resource_workload(stage)
+                except BaseException as diagnostic_error:
+                    issue = InvocationAuditIssue(
+                        phase="stage resource workload",
+                        error=diagnostic_error,
+                    )
+                    self.diagnostic_issues.append(issue)
+                    _add_note_without_masking(
+                        exc,
+                        "Failed to construct stage workload evidence while "
+                        f"preserving {_safe_exception_description(exc)}; "
+                        "diagnostic_error="
+                        f"{_safe_exception_description(diagnostic_error)}"
+                    )
+                    workload = self._unavailable_resource_workload(
+                        stage,
+                        diagnostic_error,
+                    )
             try:
                 audit_path = self._record_failed_attempt(
                     stage,
@@ -5504,39 +6431,95 @@ class ClimateStressPipeline:
                     resources=resources,
                     resource_workload=workload,
                 )
-            except Exception as logging_error:
-                audit_path = None
-                exc.add_note(
-                    f"Failed to persist structured attempt log: {logging_error}"
+            except BaseException as logging_error:
+                if isinstance(logging_error, StageAttemptAuditError):
+                    audit_path = logging_error.published_audit_path
+                    root_error = logging_error.audit_error
+                    issue_phase = logging_error.phase
+                else:
+                    audit_path = None
+                    root_error = logging_error
+                    issue_phase = "stage attempt audit"
+                self.audit_issues.append(
+                    InvocationAuditIssue(
+                        phase=issue_phase,
+                        error=root_error,
+                        published_audit_path=audit_path,
+                    )
                 )
-            self.quality_records.append(
-                {
+                _add_note_without_masking(
+                    exc,
+                    "Failed to persist complete structured attempt evidence: "
+                    f"{_safe_exception_description(root_error)}"
+                )
+            failed_record = {
                     "stage": stage,
                     "execution_status": "FAILED",
+                    "failure_phase": getattr(
+                        exc,
+                        "failure_phase",
+                        "STAGE_EXECUTION",
+                    ),
+                    "exit_status": exit_status,
+                    "exception": _exception_payload(exc),
                     "resources": resources,
                     "resource_workload": workload,
                     "failure_audit": None if audit_path is None else str(audit_path),
                 }
-            )
+            try:
+                self.quality_records.append(failed_record)
+            except BaseException as record_error:
+                self.audit_issues.append(
+                    InvocationAuditIssue(
+                        phase="stage quality record",
+                        error=record_error,
+                        published_audit_path=audit_path,
+                    )
+                )
+                _add_note_without_masking(
+                    exc,
+                    "Failed to preserve the failed stage quality record: "
+                    f"{_safe_exception_description(record_error)}",
+                )
             raise
-        marker = result.get("marker") or {}
-        self.quality_records.append(
-            {
+        success_record: dict[str, Any] | None = None
+        try:
+            marker = result.get("marker") or {}
+            success_record = {
                 "stage": stage,
                 "execution_status": result["status"],
                 "resources": marker.get("resources", {}),
                 "resource_workload": marker.get("resource_workload", {}),
             }
-        )
-        return result
+            self.quality_records.append(success_record)
+            return result
+        except BaseException as exc:
+            phase = (
+                "STAGE_POST_VERIFY"
+                if result.get("status") == "SKIPPED_SUCCESS_MARKER"
+                else "STAGE_POST_PUBLISH"
+            )
+            _annotate_failure_phase(exc, phase)
+            if success_record is not None and success_record not in self.quality_records:
+                try:
+                    self.quality_records.append(success_record)
+                except BaseException:
+                    pass
+            try:
+                setattr(exc, "stage_execution_status", "COMPLETED")
+                setattr(exc, "published_stage_marker", result.get("marker") or {})
+            except (AttributeError, TypeError):
+                pass
+            raise
 
-    def write_quality_summary(
+    def prepare_quality_summary(
         self,
         requested_stage: str,
         *,
-        execution_status: str,
-        exception: Exception | None = None,
-    ) -> Path:
+        resume: bool,
+    ) -> PreparedQualitySummary:
+        """Freeze run-derived summary fields while the run lease is held."""
+
         target = (
             self.context.audit_dir
             / "quality_summaries"
@@ -5562,7 +6545,8 @@ class ClimateStressPipeline:
             "invocation_id": self.invocation_id,
             "run_id": self.context.run_id,
             "requested_stage": requested_stage,
-            "execution_status": execution_status,
+            "requested_scope": self.scope.as_parameters(),
+            "resume": bool(resume),
             "status": self.context.completion_scope_status,
             "scope_profile": self.context.scope_profile,
             "completion_scope_status": self.context.completion_scope_status,
@@ -5588,25 +6572,46 @@ class ClimateStressPipeline:
             ),
             "effective_config_sha256": self.config.sha256,
             "resolved_paths": self.config.resolved_paths(),
+            "parameter_sha256": self.context.parameter_sha256,
+            "source_tree_sha256": self.context.source_tree_sha256,
             "environment_sha256": self.context.environment_sha256,
+            "code_git_commit": self.context.code_git_commit,
             "stages": self.quality_records,
-            "exception": (
-                None
-                if exception is None
-                else {
-                    "type": type(exception).__name__,
-                    "message": str(exception),
-                }
-            ),
+            "audit_issues": [issue.as_payload() for issue in self.audit_issues],
+            "diagnostic_issues": [
+                issue.as_payload() for issue in self.diagnostic_issues
+            ],
+            "run_state_frozen_while_lease_held": True,
+            "capture_mode": "automatic_runtime",
+            "retrospective": False,
         }
-        _write_json_new(target, payload)
-        return target
+        return PreparedQualitySummary(
+            target,
+            self.context.run_dir,
+            _snapshot_quality_payload(payload),
+        )
 
     def run(self, requested_stage: str) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        for stage in dependency_closure(requested_stage):
-            results.append(self.run_one(stage))
-        return results
+        stages = dependency_closure(requested_stage)
+        try:
+            for stage in stages:
+                result = self.run_one(stage)
+                results.append(result)
+            self.completed_run_results = _snapshot_quality_payload(
+                {"results": results}
+            )["results"]
+            self.requested_stage_execution_completed = True
+            return results
+        except BaseException as exc:
+            if all(stage in self.authoritative_stage_markers for stage in stages):
+                _annotate_failure_phase(exc, "INVOCATION_POST_STAGE")
+                try:
+                    setattr(exc, "stage_execution_status", "COMPLETED")
+                    setattr(exc, "requested_stage_execution_completed", True)
+                except (AttributeError, TypeError):
+                    pass
+            raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5645,59 +6650,356 @@ def main(
         if args.resume and not args.run_id:
             raise ValueError("--resume requires an explicit --run-id")
         run_id = args.run_id or config.make_run_id(scope.mode)
-        with exclusive_run_lock(config.output_root, run_id):
-            context = initialize_run(
-                config,
-                run_id=run_id,
-                parameters=scope.as_parameters(),
-                resume=args.resume,
-                repo_root=Path(__file__).resolve().parents[4],
-            )
-            pipeline = ClimateStressPipeline(
-                config=config,
-                context=context,
-                scope=scope,
-                handlers=handlers or default_handlers(),
-                resume=args.resume,
-            )
-            try:
-                results = pipeline.run(args.stage)
-            except Exception as exc:
+        invocation_id = uuid.uuid4().hex
+        invocation_started_at_utc = utc_now()
+        # This timestamp is acquired before the lease so that the first
+        # statement after lease acquisition is already inside the unified
+        # BaseException boundary.
+        initialization_started_at_utc = invocation_started_at_utc
+        lease: RunLock | None = None
+        context: RunContext | None = None
+        pipeline: ClimateStressPipeline | None = None
+        initialization_evidence: InitializationFailureEvidence | None = None
+        prepared_summary: PreparedQualitySummary | None = None
+        execution_error: BaseException | None = None
+        release_error: BaseException | None = None
+        failure_phase: str | None = None
+        stage_execution_status = "NOT_STARTED"
+        results: list[dict[str, Any]] = []
+
+        try:
+            with exclusive_run_lock(config.output_root, run_id) as active_lease:
+                lease = active_lease
                 try:
-                    pipeline.write_quality_summary(
-                        args.stage,
-                        execution_status="FAILED",
-                        exception=exc,
+                    context = initialize_run(
+                        config,
+                        run_id=run_id,
+                        parameters=scope.as_parameters(),
+                        resume=args.resume,
+                        repo_root=Path(__file__).resolve().parents[4],
+                        invocation_id=invocation_id,
                     )
-                except Exception as summary_error:
-                    exc.add_note(
-                        f"Failed to persist run quality summary: {summary_error}"
-                    )
+                except BaseException as exc:
+                    _normalize_incomplete_exit_status(exc)
+                    execution_error = exc
+                    failure_phase = "INITIALIZE_RUN"
+                    try:
+                        initialization_evidence = (
+                            _write_initialization_failure_records(
+                                config,
+                                scope,
+                                run_id=run_id,
+                                requested_stage=args.stage,
+                                resume=args.resume,
+                                invocation_id=invocation_id,
+                                invocation_started_at_utc=invocation_started_at_utc,
+                                initialization_started_at_utc=(
+                                    initialization_started_at_utc
+                                ),
+                                lease=active_lease,
+                                exc=exc,
+                                exit_status=_initialization_exit_status(exc),
+                            )
+                        )
+                    except BaseException as audit_error:
+                        _report_audit_failure(
+                            errors=errors,
+                            original=exc,
+                            phase="initialization failure record",
+                            audit_error=audit_error,
+                        )
+                if execution_error is None:
+                    try:
+                        pipeline = ClimateStressPipeline(
+                            config=config,
+                            context=context,
+                            scope=scope,
+                            handlers={},
+                            resume=args.resume,
+                            invocation_id=invocation_id,
+                        )
+                        pipeline.handlers = (
+                            handlers if handlers is not None else default_handlers()
+                        )
+                    except BaseException as exc:
+                        _normalize_incomplete_exit_status(exc)
+                        _annotate_failure_phase(exc, "STAGE_SETUP")
+                        execution_error = exc
+                        failure_phase = "STAGE_SETUP"
+
+                if execution_error is None and pipeline is not None:
+                    try:
+                        results = pipeline.run(args.stage)
+                        stage_execution_status = "COMPLETED"
+                    except BaseException as exc:
+                        _normalize_incomplete_exit_status(exc)
+                        execution_error = exc
+                        if pipeline.requested_stage_execution_completed:
+                            results = list(pipeline.completed_run_results)
+                            failure_phase = "INVOCATION_POST_STAGE"
+                            stage_execution_status = "COMPLETED"
+                        else:
+                            failure_phase = str(
+                                getattr(
+                                    exc,
+                                    "failure_phase",
+                                    "STAGE_EXECUTION",
+                                )
+                            )
+                            stage_execution_status = str(
+                                getattr(
+                                    exc,
+                                    "stage_execution_status",
+                                    "FAILED",
+                                )
+                            )
+
+                # Freeze all run-derived fields under the lease. After release,
+                # only terminal lease/exception fields are added before the
+                # invocation-unique no-overwrite publication.
+                try:
+                    if initialization_evidence is not None:
+                        prepared_summary = PreparedQualitySummary(
+                            target=initialization_evidence.quality_path,
+                            evidence_root=initialization_evidence.evidence_root,
+                            payload=_snapshot_quality_payload(
+                                {
+                                    **initialization_evidence.quality_payload,
+                                    "run_state_frozen_while_lease_held": True,
+                                }
+                            ),
+                        )
+                    elif pipeline is not None:
+                        prepared_summary = pipeline.prepare_quality_summary(
+                            args.stage,
+                            resume=args.resume,
+                        )
+                    elif context is not None:
+                        prepared_summary = _prepare_context_failure_summary(
+                            config=config,
+                            context=context,
+                            scope=scope,
+                            invocation_id=invocation_id,
+                            requested_stage=args.stage,
+                            resume=args.resume,
+                            failure_phase=failure_phase or "STAGE_SETUP",
+                            primary_exception=execution_error,
+                            release_exception=None,
+                            exit_status=(
+                                2
+                                if execution_error is None
+                                else _initialization_exit_status(execution_error)
+                            ),
+                        )
+                except BaseException as summary_prepare_error:
+                    if execution_error is None:
+                        _normalize_incomplete_exit_status(summary_prepare_error)
+                        _annotate_failure_phase(
+                            summary_prepare_error,
+                            "QUALITY_SUMMARY_PREPARE",
+                        )
+                        execution_error = summary_prepare_error
+                        failure_phase = "QUALITY_SUMMARY_PREPARE"
+                    else:
+                        _report_audit_failure(
+                            errors=errors,
+                            original=execution_error,
+                            phase="run quality summary preparation",
+                            audit_error=summary_prepare_error,
+                        )
+        except BaseException as lock_boundary_error:
+            if lease is None:
                 raise
-            quality_summary = pipeline.write_quality_summary(
-                args.stage,
-                execution_status="COMPLETED",
-            )
-            response = {
-                "run_id": run_id,
-                "run_dir": str(context.run_dir),
-                "status": context.completion_scope_status,
-                "scope_profile": context.scope_profile,
-                "completion_scope_status": context.completion_scope_status,
-                "scope": scope.as_parameters(),
-                "requested_stage": args.stage,
-                "executed_stages": results,
-                "quality_summary": str(quality_summary),
-            }
-        print(
-            json.dumps(
-                response,
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            file=output,
+            observed_release_error = lease.release_error
+            if observed_release_error is None:
+                # The body normally defers all failures until after release.
+                # Preserve any unexpected boundary failure as the primary one.
+                if execution_error is None:
+                    _normalize_incomplete_exit_status(lock_boundary_error)
+                    execution_error = lock_boundary_error
+                    failure_phase = str(
+                        getattr(
+                            lock_boundary_error,
+                            "failure_phase",
+                            "INVOCATION_BOUNDARY",
+                        )
+                    )
+                else:
+                    _report_audit_failure(
+                        errors=errors,
+                        original=execution_error,
+                        phase="invocation boundary",
+                        audit_error=lock_boundary_error,
+                    )
+            else:
+                release_error = observed_release_error
+                if (
+                    execution_error is None
+                    and lock_boundary_error is not observed_release_error
+                ):
+                    _normalize_incomplete_exit_status(lock_boundary_error)
+                    execution_error = lock_boundary_error
+                    failure_phase = str(
+                        getattr(
+                            lock_boundary_error,
+                            "failure_phase",
+                            "INVOCATION_BOUNDARY",
+                        )
+                    )
+
+        final_error = execution_error or release_error
+        final_phase = (
+            failure_phase
+            if execution_error is not None
+            else ("LEASE_RELEASE" if release_error is not None else None)
         )
+        invocation_status = "FAILED" if final_error is not None else "COMPLETED"
+        exit_status = (
+            0 if final_error is None else _initialization_exit_status(final_error)
+        )
+
+        if pipeline is not None and execution_error is not None:
+            for issue in pipeline.audit_issues:
+                _report_audit_failure(
+                    errors=errors,
+                    original=execution_error,
+                    phase=issue.phase,
+                    audit_error=issue.error,
+                )
+            for issue in pipeline.diagnostic_issues:
+                _emit_warning_without_masking(
+                    errors,
+                    (
+                        "DIAGNOSTIC_WARNING: "
+                        f"{issue.phase} failed while preserving "
+                        f"{_safe_exception_description(execution_error)}; "
+                        "diagnostic_error="
+                        f"{_safe_exception_description(issue.error)}"
+                    ),
+                    original=execution_error,
+                )
+        if release_error is not None:
+            _report_release_failure(
+                errors=errors,
+                primary=execution_error or release_error,
+                release_error=release_error,
+            )
+
+        response_written = False
+        if final_error is None:
+            if (
+                pipeline is None
+                or context is None
+                or lease is None
+                or prepared_summary is None
+            ):
+                execution_error = RuntimeError(
+                    "Invocation completed without initialized finalization state"
+                )
+                failure_phase = "INVOCATION_FINALIZE"
+            else:
+                response = {
+                    "run_id": run_id,
+                    "run_dir": str(context.run_dir),
+                    "status": context.completion_scope_status,
+                    "scope_profile": context.scope_profile,
+                    "completion_scope_status": context.completion_scope_status,
+                    "scope": scope.as_parameters(),
+                    "requested_stage": args.stage,
+                    "executed_stages": results,
+                    "quality_summary": str(prepared_summary.target),
+                    "quality_summary_state_at_response_write": "PENDING",
+                    "quality_summary_finalized_on_process_exit": True,
+                }
+                try:
+                    print(
+                        json.dumps(
+                            response,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        file=output,
+                    )
+                    output.flush()
+                    response_written = True
+                except BaseException as response_error:
+                    _normalize_incomplete_exit_status(response_error)
+                    _annotate_failure_phase(response_error, "RESPONSE_WRITE")
+                    execution_error = response_error
+                    failure_phase = "RESPONSE_WRITE"
+                    _emit_warning_without_masking(
+                        errors,
+                        "AUDIT_WARNING: CLI response delivery failed; the final "
+                        "quality summary will record invocation failure: "
+                        f"{_safe_exception_description(response_error)}",
+                        original=response_error,
+                    )
+
+        final_error = execution_error or release_error
+        final_phase = (
+            failure_phase
+            if execution_error is not None
+            else ("LEASE_RELEASE" if release_error is not None else None)
+        )
+        invocation_status = "FAILED" if final_error is not None else "COMPLETED"
+        exit_status = (
+            0 if final_error is None else _initialization_exit_status(final_error)
+        )
+
+        quality_summary: Path | None = None
+        if prepared_summary is not None and lease is not None:
+            try:
+                quality_summary = _publish_quality_summary(
+                    prepared_summary,
+                    invocation_status=invocation_status,
+                    stage_execution_status=stage_execution_status,
+                    failure_phase=final_phase,
+                    primary_exception=execution_error,
+                    release_exception=release_error,
+                    exit_status=exit_status,
+                    lease=lease,
+                    output_root=config.output_root.resolve(strict=False),
+                )
+            except BaseException as summary_error:
+                _normalize_incomplete_exit_status(summary_error)
+                preserved = final_error or summary_error
+                _report_audit_failure(
+                    errors=errors,
+                    original=preserved,
+                    phase=(
+                        "completed run quality summary"
+                        if final_error is None
+                        else "run quality summary"
+                    ),
+                    audit_error=summary_error,
+                )
+                if final_error is None:
+                    execution_error = summary_error
+                    final_error = summary_error
+                    final_phase = "QUALITY_SUMMARY_WRITE"
+
+        if final_error is not None:
+            raise final_error
+
+        if quality_summary is None:
+            raise RuntimeError("Invocation completed without a quality summary")
+        if not response_written:
+            raise RuntimeError("Invocation completed without a CLI response")
         return 0
-    except (OSError, ValueError, RuntimeError, ImportError, TypeError, AssertionError) as exc:
-        print(f"{type(exc).__name__}: {exc}", file=errors)
+    except Exception as exc:
+        message = _safe_exception_description(exc)
+        try:
+            print(message, file=errors)
+        except BaseException as reporting_error:
+            _add_note_without_masking(
+                exc,
+                "Failed to emit final CLI error output: "
+                f"{_safe_exception_description(reporting_error)}",
+            )
+            fallback = sys.__stderr__
+            if fallback is not None and fallback is not errors:
+                try:
+                    print(message, file=fallback)
+                except BaseException:
+                    pass
         return 2

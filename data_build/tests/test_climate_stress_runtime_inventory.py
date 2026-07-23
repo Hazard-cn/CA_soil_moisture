@@ -7,6 +7,7 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any, Mapping
 
 import netCDF4 as nc
 import numpy as np
@@ -444,6 +445,392 @@ def test_run_lock_records_owner_rejects_competitor_and_preserves_audits(
             raise RuntimeError("simulated owner failure")
     with exclusive_run_lock(root, "concurrent-run") as recovered:
         assert recovered.lease_id != first.lease_id
+
+
+@pytest.mark.parametrize(
+    "body_error",
+    [
+        pytest.param(
+            KeyboardInterrupt("simulated body interrupt"),
+            id="keyboard-interrupt",
+        ),
+        pytest.param(SystemExit(7), id="system-exit-7"),
+    ],
+)
+def test_release_audit_failure_preserves_active_base_exception_and_unlocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body_error: BaseException,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    root = tmp_path / "release-audit-active-error"
+    run_id = f"active-{type(body_error).__name__.lower()}"
+    real_write_lock_audit = runtime._write_lock_audit
+    failed_release_audit = False
+
+    def fail_first_release_audit(
+        path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        nonlocal failed_release_audit
+        if not failed_release_audit and ".released." in path.name:
+            failed_release_audit = True
+            raise OSError("simulated release audit failure")
+        real_write_lock_audit(path, payload)
+
+    monkeypatch.setattr(runtime, "_write_lock_audit", fail_first_release_audit)
+    first_lease_id: str | None = None
+    captured: BaseException | None = None
+    try:
+        with exclusive_run_lock(root, run_id) as first:
+            first_lease_id = first.lease_id
+            raise body_error
+    except BaseException as exc:
+        captured = exc
+    else:
+        pytest.fail("The active body exception was not propagated")
+
+    assert first_lease_id is not None
+    lock_dir = root / ".run-locks"
+    assert (lock_dir / f"{run_id}.acquired.{first_lease_id}.json").is_file()
+    assert not (lock_dir / f"{run_id}.released.{first_lease_id}.json").exists()
+
+    with exclusive_run_lock(root, run_id) as recovered:
+        assert recovered.lease_id != first_lease_id
+        recovered_lease_id = recovered.lease_id
+    assert (lock_dir / f"{run_id}.released.{recovered_lease_id}.json").is_file()
+
+    assert captured is body_error
+    if isinstance(body_error, SystemExit):
+        assert body_error.code == 7
+    else:
+        assert body_error.args == ("simulated body interrupt",)
+    notes = getattr(body_error, "__notes__", [])
+    assert any(
+        "RunLockError" in note
+        and "OSError" in note
+        and "simulated release audit failure" in note
+        for note in notes
+    )
+
+
+def test_release_audit_failure_without_active_exception_raises_and_unlocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    root = tmp_path / "release-audit-normal-body"
+    run_id = "normal-body"
+    real_write_lock_audit = runtime._write_lock_audit
+    failed_release_audit = False
+
+    def fail_first_release_audit(
+        path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        nonlocal failed_release_audit
+        if not failed_release_audit and ".released." in path.name:
+            failed_release_audit = True
+            raise OSError("simulated release audit failure")
+        real_write_lock_audit(path, payload)
+
+    monkeypatch.setattr(runtime, "_write_lock_audit", fail_first_release_audit)
+    first_lease_id: str | None = None
+    with pytest.raises(
+        RunLockError,
+        match="Failed to persist run-lock release audit",
+    ) as caught:
+        with exclusive_run_lock(root, run_id) as first:
+            first_lease_id = first.lease_id
+
+    assert first_lease_id is not None
+    assert isinstance(caught.value.__cause__, OSError)
+    assert str(caught.value.__cause__) == "simulated release audit failure"
+    lock_dir = root / ".run-locks"
+    assert (lock_dir / f"{run_id}.acquired.{first_lease_id}.json").is_file()
+    assert not (lock_dir / f"{run_id}.released.{first_lease_id}.json").exists()
+
+    with exclusive_run_lock(root, run_id) as recovered:
+        assert recovered.lease_id != first_lease_id
+        recovered_lease_id = recovered.lease_id
+    assert (lock_dir / f"{run_id}.released.{recovered_lease_id}.json").is_file()
+
+
+def test_run_lock_release_records_ordered_terminal_timeline_after_os_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    events: list[str] = []
+    timestamps = iter(
+        [
+            "2026-07-23T00:00:01+00:00",
+            "2026-07-23T00:00:02+00:00",
+        ]
+    )
+
+    class ControlledHandle:
+        def close(self) -> None:
+            events.append("close")
+
+    def controlled_unlock(_handle: Any) -> None:
+        events.append("unlock")
+
+    real_write_lock_audit = runtime._write_lock_audit
+
+    def ordered_write(path: Path, payload: Mapping[str, Any]) -> None:
+        assert events == ["unlock", "close"]
+        events.append("audit")
+        real_write_lock_audit(path, payload)
+
+    monkeypatch.setattr(runtime, "utc_now", lambda: next(timestamps))
+    monkeypatch.setattr(runtime, "_unlock_file", controlled_unlock)
+    monkeypatch.setattr(runtime, "_write_lock_audit", ordered_write)
+    lock_dir = tmp_path / ".run-locks"
+    lock_dir.mkdir()
+    lease = runtime.RunLock(
+        path=lock_dir / "ordered-release.lock",
+        lease_id="ordered-lease",
+        metadata={
+            "schema_version": 1,
+            "run_id": "ordered-release",
+            "lease_id": "ordered-lease",
+        },
+        handle=ControlledHandle(),
+    )
+
+    lease.release()
+
+    assert events == ["unlock", "close", "audit"]
+    assert lease.release_attempted is True
+    assert lease.released is True
+    assert lease.release_error is None
+    assert lease.release_attempted_at_utc == "2026-07-23T00:00:01+00:00"
+    assert lease.release_terminal_at_utc == "2026-07-23T00:00:02+00:00"
+    assert lease.release_attempted_at_utc <= lease.release_terminal_at_utc
+    assert lease.released_at_utc == lease.release_terminal_at_utc
+    assert lease.release_audit_persisted is True
+    assert lease.release_timestamp_recorded is True
+    assert lease.os_unlock_succeeded is True
+    assert lease.handle_closed is True
+
+    audit_path = lock_dir / "ordered-release.released.ordered-lease.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["release_attempted_at_utc"] == lease.release_attempted_at_utc
+    assert audit["release_terminal_at_utc"] == lease.release_terminal_at_utc
+    assert audit["released_at_utc"] == lease.released_at_utc
+    assert audit["release_attempted"] is True
+    assert audit["released"] is True
+    assert audit["release_timestamp_recorded"] is True
+    assert audit["os_unlock_succeeded"] is True
+    assert audit["handle_closed"] is True
+
+
+@pytest.mark.parametrize(
+    (
+        "fault",
+        "expected_audit_persisted",
+        "expected_unlock_succeeded",
+        "expected_handle_closed",
+        "expected_audit_file",
+    ),
+    [
+        ("audit", False, True, True, False),
+        ("unlock", True, False, True, True),
+        ("close", True, True, False, True),
+    ],
+)
+def test_run_lock_release_faults_keep_detailed_state_without_false_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    expected_audit_persisted: bool,
+    expected_unlock_succeeded: bool,
+    expected_handle_closed: bool,
+    expected_audit_file: bool,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    class ControlledHandle:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if fault == "close":
+                raise OSError("simulated close failure")
+
+    lock_dir = tmp_path / ".run-locks"
+    lock_dir.mkdir()
+    run_id = f"release-state-{fault}"
+    lease_id = f"lease-{fault}"
+    handle = ControlledHandle()
+    unlock_calls = 0
+    real_write_lock_audit = runtime._write_lock_audit
+
+    def controlled_write(path: Path, payload: Mapping[str, Any]) -> None:
+        if fault == "audit":
+            raise OSError("simulated release audit failure")
+        real_write_lock_audit(path, payload)
+
+    def controlled_unlock(_handle: Any) -> None:
+        nonlocal unlock_calls
+        unlock_calls += 1
+        if fault == "unlock":
+            raise OSError("simulated unlock failure")
+
+    monkeypatch.setattr(runtime, "_write_lock_audit", controlled_write)
+    monkeypatch.setattr(runtime, "_unlock_file", controlled_unlock)
+    lease = runtime.RunLock(
+        path=lock_dir / f"{run_id}.lock",
+        lease_id=lease_id,
+        metadata={
+            "schema_version": 1,
+            "run_id": run_id,
+            "lease_id": lease_id,
+        },
+        handle=handle,
+    )
+
+    with pytest.raises(RunLockError) as captured:
+        lease.release()
+
+    assert lease.release_attempted is True
+    assert lease.released is False
+    assert lease.release_error is captured.value
+    assert lease.release_attempted_at_utc
+    assert lease.release_terminal_at_utc
+    assert lease.release_attempted_at_utc <= lease.release_terminal_at_utc
+    expected_released_at = (
+        lease.release_terminal_at_utc if fault == "audit" else None
+    )
+    assert lease.released_at_utc == expected_released_at
+    assert lease.release_audit_persisted is expected_audit_persisted
+    assert lease.release_timestamp_recorded is True
+    assert lease.os_unlock_succeeded is expected_unlock_succeeded
+    assert lease.handle_closed is expected_handle_closed
+    assert unlock_calls == 1
+    assert handle.close_calls == 1
+    audit_path = lock_dir / f"{run_id}.released.{lease_id}.json"
+    assert audit_path.is_file() is expected_audit_file
+    if expected_audit_file:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        assert audit["release_attempted"] is True
+        assert audit["released"] is False
+        assert audit["release_attempted_at_utc"] == lease.release_attempted_at_utc
+        assert audit["release_terminal_at_utc"] == lease.release_terminal_at_utc
+        assert audit["released_at_utc"] == lease.released_at_utc
+        assert audit["release_timestamp_recorded"] is True
+        assert audit["os_unlock_succeeded"] is expected_unlock_succeeded
+        assert audit["handle_closed"] is expected_handle_closed
+
+    # A failed release attempt is immutable evidence and must not be rewritten.
+    lease.release()
+    assert unlock_calls == 1
+    assert handle.close_calls == 1
+
+
+@pytest.mark.parametrize("phase", ["attempt", "terminal"])
+@pytest.mark.parametrize(
+    ("signal_kind", "expected_code"),
+    [
+        pytest.param("keyboard", None, id="keyboard-interrupt"),
+        pytest.param("system-exit-0", 0, id="system-exit-0"),
+        pytest.param("system-exit-7", 7, id="system-exit-7"),
+    ],
+)
+def test_run_lock_release_timestamp_base_exception_still_unlocks_and_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    signal_kind: str,
+    expected_code: int | None,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    events: list[str] = []
+    now_calls = 0
+
+    class ControlledHandle:
+        def close(self) -> None:
+            events.append("close")
+
+    def controlled_unlock(_handle: Any) -> None:
+        events.append("unlock")
+
+    if signal_kind == "keyboard":
+        signal: BaseException = KeyboardInterrupt("timestamp interrupted")
+    else:
+        signal = SystemExit(expected_code)
+
+    def controlled_now() -> str:
+        nonlocal now_calls
+        now_calls += 1
+        if (phase == "attempt" and now_calls == 1) or (
+            phase == "terminal" and now_calls == 2
+        ):
+            raise signal
+        return f"2026-07-23T00:00:0{now_calls}+00:00"
+
+    real_write_lock_audit = runtime._write_lock_audit
+
+    def ordered_write(path: Path, payload: Mapping[str, Any]) -> None:
+        assert events == ["unlock", "close"]
+        events.append("audit")
+        real_write_lock_audit(path, payload)
+
+    monkeypatch.setattr(runtime, "utc_now", controlled_now)
+    monkeypatch.setattr(runtime, "_unlock_file", controlled_unlock)
+    monkeypatch.setattr(runtime, "_write_lock_audit", ordered_write)
+    lock_dir = tmp_path / ".run-locks"
+    lock_dir.mkdir()
+    run_id = f"timestamp-{phase}-{signal_kind}"
+    lease_id = "lease"
+    lease = runtime.RunLock(
+        path=lock_dir / f"{run_id}.lock",
+        lease_id=lease_id,
+        metadata={
+            "schema_version": 1,
+            "run_id": run_id,
+            "lease_id": lease_id,
+        },
+        handle=ControlledHandle(),
+    )
+
+    with pytest.raises(RunLockError) as captured:
+        lease.release()
+
+    assert captured.value.__cause__ is signal
+    assert lease.release_error is captured.value
+    assert lease.release_attempted is True
+    assert lease.released is False
+    assert lease.release_audit_persisted is True
+    assert lease.release_timestamp_recorded is False
+    assert lease.os_unlock_succeeded is True
+    assert lease.handle_closed is True
+    assert events == ["unlock", "close", "audit"]
+    if phase == "attempt":
+        assert lease.release_attempted_at_utc is None
+        assert lease.release_terminal_at_utc == "2026-07-23T00:00:02+00:00"
+        assert lease.released_at_utc == lease.release_terminal_at_utc
+    else:
+        assert lease.release_attempted_at_utc == "2026-07-23T00:00:01+00:00"
+        assert lease.release_terminal_at_utc is None
+        assert lease.released_at_utc is None
+
+    audit_path = lock_dir / f"{run_id}.released.{lease_id}.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["release_attempted"] is True
+    assert audit["released"] is False
+    assert audit["release_timestamp_recorded"] is False
+    assert audit["os_unlock_succeeded"] is True
+    assert audit["handle_closed"] is True
+    assert audit["release_attempted_at_utc"] == lease.release_attempted_at_utc
+    assert audit["release_terminal_at_utc"] == lease.release_terminal_at_utc
+    assert audit["released_at_utc"] == lease.released_at_utc
 
 
 def test_process_crash_releases_os_lock_without_deleting_persistent_file(

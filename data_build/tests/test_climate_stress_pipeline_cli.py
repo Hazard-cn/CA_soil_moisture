@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -26,6 +28,8 @@ from climate_stress.pipeline import (  # noqa: E402
     _add_hot_flash_window_metrics,
     _contiguous_year_groups,
     _event_partition_years,
+    _initialization_evidence_root,
+    _initialization_exit_status,
     _read_v3_legacy_projection,
     _read_v3_validation_projection,
     _validate_spei_2w_event_row_counts,
@@ -638,6 +642,1080 @@ def test_resume_rejects_changed_runtime_environment_signature(
     assert "environment signature" in errors.getvalue()
 
 
+def test_main_resume_signature_mismatch_writes_unique_initialization_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    scope = resolve_scope(config, pilot_cells=100, years=None, hash_mode="pilot")
+    source_state = {
+        "available": True,
+        "is_dirty": False,
+        "status_counts": {},
+        "scoped_path_count": 1,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "source_tree_provenance",
+        lambda *_args, **_kwargs: ("a" * 64, source_state),
+    )
+    run_id = "resume-init-audit-run"
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    recorder = RecordingHandlers()
+    stdout = io.StringIO()
+    assert main(
+        arguments,
+        handlers=recorder.mapping(),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+
+    response = json.loads(stdout.getvalue())
+    run_dir = Path(response["run_dir"])
+    quality_dir = run_dir / "audit" / "quality_summaries"
+    failure_dir = run_dir / "audit" / "initialization_failures"
+    lock_dir = config.output_root / ".run-locks"
+    initial_summary = Path(response["quality_summary"])
+    stable_files = {
+        run_dir / "_RUN.json": (run_dir / "_RUN.json").read_bytes(),
+        initial_summary: initial_summary.read_bytes(),
+    }
+    stage_snapshot = {
+        path.relative_to(run_dir / "stages").as_posix(): path.read_bytes()
+        for path in (run_dir / "stages").rglob("*")
+        if path.is_file()
+    }
+    attempt_snapshot = {
+        path.relative_to(run_dir).as_posix(): path.read_bytes()
+        for path in (run_dir / "audit" / "attempts").glob("*")
+        if path.is_file()
+    }
+    initialization_tree_before = set(
+        config.output_root.glob(f".{run_id}.*.initializing.*")
+    )
+    recorded_invocations: list[str] = []
+    recorded_leases: list[str] = []
+
+    monkeypatch.setattr(
+        runtime,
+        "source_tree_provenance",
+        lambda *_args, **_kwargs: ("b" * 64, source_state),
+    )
+    for _attempt in range(2):
+        summaries_before = set(quality_dir.glob("run_quality_summary.*.json"))
+        failures_before = set(failure_dir.glob("initialization_failure.*.json"))
+        acquired_before = set(lock_dir.glob(f"{run_id}.acquired.*.json"))
+        released_before = set(lock_dir.glob(f"{run_id}.released.*.json"))
+
+        errors = io.StringIO()
+        assert main(
+            [*arguments, "--resume"],
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=errors,
+        ) == 2
+        assert "ResumeMismatchError" in errors.getvalue()
+        assert "source signature" in errors.getvalue()
+
+        new_summaries = set(quality_dir.glob("run_quality_summary.*.json")) - summaries_before
+        new_failures = set(failure_dir.glob("initialization_failure.*.json")) - failures_before
+        new_acquired = set(lock_dir.glob(f"{run_id}.acquired.*.json")) - acquired_before
+        new_released = set(lock_dir.glob(f"{run_id}.released.*.json")) - released_before
+        assert len(new_summaries) == 1
+        assert len(new_failures) == 1
+        assert len(new_acquired) == 1
+        assert len(new_released) == 1
+
+        summary_path = next(iter(new_summaries))
+        failure_path = next(iter(new_failures))
+        acquired_path = next(iter(new_acquired))
+        released_path = next(iter(new_released))
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+        acquired = json.loads(acquired_path.read_text(encoding="utf-8"))
+        released = json.loads(released_path.read_text(encoding="utf-8"))
+
+        invocation_id = failure["invocation_id"]
+        lease_id = failure["lease"]["lease_id"]
+        recorded_invocations.append(invocation_id)
+        recorded_leases.append(lease_id)
+        assert summary_path.name == f"run_quality_summary.{invocation_id}.json"
+        assert failure_path.name == f"initialization_failure.{invocation_id}.json"
+        assert summary["invocation_id"] == invocation_id
+        assert failure["run_id"] == summary["run_id"] == run_id
+        assert failure["requested_stage"] == summary["requested_stage"] == "assets"
+        assert failure["requested_scope"] == summary["requested_scope"] == scope.as_parameters()
+        assert failure["resume"] is True and summary["resume"] is True
+        assert failure["failure_phase"] == summary["failure_phase"] == "INITIALIZE_RUN"
+        assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+        assert failure["exit_status"] == summary["exit_status"] == 2
+        assert failure["exception"]["type"] == "ResumeMismatchError"
+        assert summary["exception"] == failure["exception"]
+        assert failure["evidence_location"] == "existing_run"
+        assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+        assert failure["retrospective"] is summary["retrospective"] is False
+        assert failure["stage_attempt_created"] is False
+        assert failure["stage_partial_created"] is False
+        assert summary["stages"] == []
+        assert summary["initialization_failure_audit"] == failure_path.relative_to(
+            run_dir
+        ).as_posix()
+        requested = failure["requested_signatures"]
+        observed = failure["observed_signatures"]
+        signature_keys = {
+            "config_sha256",
+            "parameter_sha256",
+            "source_tree_sha256",
+            "environment_sha256",
+        }
+        assert set(requested) == set(observed) == signature_keys
+        assert summary["requested_signatures"] == requested
+        assert summary["observed_signatures"] == observed
+        assert requested["config_sha256"] == observed["config_sha256"] == config.sha256
+        assert requested["parameter_sha256"] == observed["parameter_sha256"]
+        assert requested["parameter_sha256"] == failure["parameter_sha256"]
+        assert requested["source_tree_sha256"] == "b" * 64
+        assert observed["source_tree_sha256"] == "a" * 64
+        assert requested["environment_sha256"] == observed["environment_sha256"]
+
+        assert acquired["lease_id"] == released["lease_id"] == lease_id
+        assert acquired["run_id"] == released["run_id"] == run_id
+        assert acquired["pid"] == released["pid"] == failure["lease"]["pid"]
+        assert acquired["owner"] == released["owner"] == failure["lease"]["owner"]
+        assert acquired["hostname"] == released["hostname"] == failure["lease"]["hostname"]
+        assert failure["lease"]["acquired_at_utc"] == acquired["acquired_at_utc"]
+        assert acquired["acquired_at_utc"] <= failure["failed_at_utc"]
+        assert acquired["acquired_at_utc"] <= summary["created_at_utc"]
+        assert failure["failed_at_utc"] <= released["released_at_utc"]
+        assert summary["created_at_utc"] <= released["released_at_utc"]
+        assert (
+            config.output_root / failure["lease"]["acquired_audit"]
+        ).resolve() == acquired_path.resolve()
+        assert (
+            config.output_root / failure["lease"]["release_audit_expected"]
+        ).resolve() == released_path.resolve()
+
+        assert recorder.calls == ["assets"]
+        assert {
+            path.relative_to(run_dir / "stages").as_posix(): path.read_bytes()
+            for path in (run_dir / "stages").rglob("*")
+            if path.is_file()
+        } == stage_snapshot
+        assert {
+            path.relative_to(run_dir).as_posix(): path.read_bytes()
+            for path in (run_dir / "audit" / "attempts").glob("*")
+            if path.is_file()
+        } == attempt_snapshot
+        assert set(config.output_root.glob(f".{run_id}.*.initializing.*")) == (
+            initialization_tree_before
+        )
+        assert all(path.read_bytes() == content for path, content in stable_files.items())
+
+    assert len(set(recorded_invocations)) == 2
+    assert len(set(recorded_leases)) == 2
+    assert len(list(quality_dir.glob("run_quality_summary.*.json"))) == 3
+    assert len(list(failure_dir.glob("initialization_failure.*.json"))) == 2
+
+
+def test_main_new_run_initialization_failure_is_unique_and_retry_preserves_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    scope = resolve_scope(config, pilot_cells=100, years=None, hash_mode="pilot")
+    run_id = "new-run-init-audit"
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    recorder = RecordingHandlers()
+    real_write_json_new = runtime._write_json_new
+
+    def fail_run_manifest(target, payload, run_dir):
+        if target.name == "_RUN.json":
+            raise RuntimeError("simulated _RUN.json initialization failure")
+        return real_write_json_new(target, payload, run_dir)
+
+    monkeypatch.setattr(runtime, "_write_json_new", fail_run_manifest)
+    output_root = config.output_root
+    final_run = output_root / run_id
+    lock_dir = output_root / ".run-locks"
+    failure_snapshots: list[tuple[Path, dict[str, bytes]]] = []
+    failure_invocations: list[str] = []
+    failure_leases: list[str] = []
+
+    for attempt_index in range(2):
+        incomplete_before = set(
+            output_root.glob(f".{run_id}.*.initializing.incomplete")
+        )
+        acquired_before = set(lock_dir.glob(f"{run_id}.acquired.*.json"))
+        released_before = set(lock_dir.glob(f"{run_id}.released.*.json"))
+        errors = io.StringIO()
+        invocation_arguments = (
+            arguments if attempt_index == 0 else [*arguments, "--resume"]
+        )
+        assert main(
+            invocation_arguments,
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=errors,
+        ) == 2
+        assert "RuntimeError: simulated _RUN.json initialization failure" in (
+            errors.getvalue()
+        )
+        assert not final_run.exists()
+
+        new_incomplete = set(
+            output_root.glob(f".{run_id}.*.initializing.incomplete")
+        ) - incomplete_before
+        new_acquired = set(lock_dir.glob(f"{run_id}.acquired.*.json")) - acquired_before
+        new_released = set(lock_dir.glob(f"{run_id}.released.*.json")) - released_before
+        assert len(new_incomplete) == 1
+        assert len(new_acquired) == 1
+        assert len(new_released) == 1
+        incomplete = next(iter(new_incomplete))
+        acquired_path = next(iter(new_acquired))
+        released_path = next(iter(new_released))
+        initialization_records = list(
+            incomplete.glob("_INITIALIZATION_FAILED.*.json")
+        )
+        failure_records = list(
+            (incomplete / "audit" / "initialization_failures").glob(
+                "initialization_failure.*.json"
+            )
+        )
+        summaries = list(
+            (incomplete / "audit" / "quality_summaries").glob(
+                "run_quality_summary.*.json"
+            )
+        )
+        assert len(initialization_records) == 1
+        assert len(failure_records) == 1
+        assert len(summaries) == 1
+
+        initialization = json.loads(
+            initialization_records[0].read_text(encoding="utf-8")
+        )
+        failure = json.loads(failure_records[0].read_text(encoding="utf-8"))
+        summary = json.loads(summaries[0].read_text(encoding="utf-8"))
+        acquired = json.loads(acquired_path.read_text(encoding="utf-8"))
+        released = json.loads(released_path.read_text(encoding="utf-8"))
+        invocation_id = failure["invocation_id"]
+        lease_id = failure["lease"]["lease_id"]
+        failure_invocations.append(invocation_id)
+        failure_leases.append(lease_id)
+
+        assert initialization["invocation_id"] == invocation_id
+        assert initialization["run_id"] == failure["run_id"] == run_id
+        assert failure_records[0].name == f"initialization_failure.{invocation_id}.json"
+        assert summaries[0].name == f"run_quality_summary.{invocation_id}.json"
+        assert summary["invocation_id"] == invocation_id
+        assert failure["requested_stage"] == summary["requested_stage"] == "assets"
+        assert failure["requested_scope"] == summary["requested_scope"] == scope.as_parameters()
+        assert failure["resume"] is (attempt_index == 1)
+        assert summary["resume"] is (attempt_index == 1)
+        assert failure["failure_phase"] == summary["failure_phase"] == "INITIALIZE_RUN"
+        assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+        assert failure["exit_status"] == summary["exit_status"] == 2
+        assert failure["exception"]["type"] == "RuntimeError"
+        assert failure["exception"]["message"] == (
+            "simulated _RUN.json initialization failure"
+        )
+        assert summary["exception"] == failure["exception"]
+        assert failure["evidence_location"] == "initialization_incomplete"
+        assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+        assert failure["retrospective"] is summary["retrospective"] is False
+        assert Path(failure["initialization_evidence_dir"]).resolve() == (
+            incomplete.resolve()
+        )
+        assert failure["stage_attempt_created"] is False
+        assert failure["stage_partial_created"] is False
+        assert summary["stages"] == []
+        assert summary["initialization_failure_audit"] == failure_records[
+            0
+        ].relative_to(incomplete).as_posix()
+        requested = failure["requested_signatures"]
+        assert set(requested) == {
+            "config_sha256",
+            "parameter_sha256",
+            "source_tree_sha256",
+            "environment_sha256",
+        }
+        assert summary["requested_signatures"] == requested
+        assert failure["observed_signatures"] == summary["observed_signatures"] == {}
+        assert requested["config_sha256"] == config.sha256
+        assert requested["parameter_sha256"] == failure["parameter_sha256"]
+        assert requested["source_tree_sha256"] == failure["source_tree_sha256"]
+        assert requested["environment_sha256"] == failure["environment_sha256"]
+        assert all(isinstance(value, str) and len(value) == 64 for value in requested.values())
+
+        assert acquired["lease_id"] == released["lease_id"] == lease_id
+        assert acquired["run_id"] == released["run_id"] == run_id
+        assert acquired["pid"] == released["pid"] == failure["lease"]["pid"]
+        assert acquired["acquired_at_utc"] <= failure["failed_at_utc"]
+        assert failure["failed_at_utc"] <= released["released_at_utc"]
+        assert summary["created_at_utc"] <= released["released_at_utc"]
+
+        assert list((incomplete / "stages").iterdir()) == []
+        assert not list((incomplete / "audit" / "attempts").glob("*"))
+        assert not list(incomplete.rglob("*.partial"))
+        assert not list(incomplete.rglob("_START.json"))
+        assert not list(incomplete.rglob("_STAGE_RESULT.json"))
+        assert not list(incomplete.rglob("_SUCCESS.json"))
+        assert not list(incomplete.rglob("_FAILED.*.json"))
+        assert recorder.calls == []
+
+        snapshot = {
+            path.relative_to(incomplete).as_posix(): path.read_bytes()
+            for path in incomplete.rglob("*")
+            if path.is_file()
+        }
+        failure_snapshots.append((incomplete, snapshot))
+        for preserved_root, preserved in failure_snapshots:
+            assert {
+                path.relative_to(preserved_root).as_posix(): path.read_bytes()
+                for path in preserved_root.rglob("*")
+                if path.is_file()
+            } == preserved
+
+    assert len(set(failure_invocations)) == 2
+    assert len(set(failure_leases)) == 2
+    assert not (output_root / ".run-invocations" / run_id).exists()
+
+    monkeypatch.setattr(runtime, "_write_json_new", real_write_json_new)
+    stdout = io.StringIO()
+    assert main(
+        [*arguments, "--resume"],
+        handlers=recorder.mapping(),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    response = json.loads(stdout.getvalue())
+    assert Path(response["run_dir"]) == final_run
+    assert final_run.is_dir()
+    assert recorder.calls == ["assets"]
+    assert len(list(lock_dir.glob(f"{run_id}.acquired.*.json"))) == 3
+    assert len(list(lock_dir.glob(f"{run_id}.released.*.json"))) == 3
+    assert len(
+        {
+            json.loads(path.read_text(encoding="utf-8"))["lease_id"]
+            for path in lock_dir.glob(f"{run_id}.acquired.*.json")
+        }
+    ) == 3
+    assert len(list((final_run / "audit" / "quality_summaries").glob("*.json"))) == 1
+    assert len(list(output_root.glob(f".{run_id}.*.initializing.incomplete"))) == 2
+    for preserved_root, preserved in failure_snapshots:
+        assert preserved_root.is_dir()
+        assert {
+            path.relative_to(preserved_root).as_posix(): path.read_bytes()
+            for path in preserved_root.rglob("*")
+            if path.is_file()
+        } == preserved
+
+
+@pytest.mark.parametrize("fail_on_write", [1, 2])
+def test_main_initialization_audit_write_failure_warns_without_masking_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on_write: int,
+) -> None:
+    import climate_stress.pipeline as pipeline
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"initialization-audit-write-failure-{fail_on_write}"
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    recorder = RecordingHandlers()
+    original = RuntimeError("simulated primary initialization failure")
+
+    def fail_initialization(*_args, **_kwargs):
+        raise original
+
+    real_write_json_atomic_new = pipeline._write_json_atomic_new
+    write_count = 0
+    published_before_failure: dict[Path, bytes] = {}
+
+    def fail_selected_audit_write(path, payload, *, evidence_root):
+        nonlocal write_count
+        write_count += 1
+        if write_count == fail_on_write:
+            published_before_failure.update(
+                {
+                    existing: existing.read_bytes()
+                    for existing in evidence_root.rglob("*")
+                    if existing.is_file()
+                }
+            )
+            raise OSError(
+                f"simulated initialization audit persistence failure {fail_on_write}"
+            )
+        return real_write_json_atomic_new(
+            path,
+            payload,
+            evidence_root=evidence_root,
+        )
+
+    monkeypatch.setattr(pipeline, "initialize_run", fail_initialization)
+    monkeypatch.setattr(
+        pipeline,
+        "_write_json_atomic_new",
+        fail_selected_audit_write,
+    )
+    stdout = io.StringIO()
+    errors = io.StringIO()
+
+    assert main(
+        arguments,
+        handlers=recorder.mapping(),
+        stdout=stdout,
+        stderr=errors,
+    ) == 2
+
+    stderr_lines = errors.getvalue().splitlines()
+    assert any(line.startswith("AUDIT_WARNING: ") for line in stderr_lines)
+    assert "absent or incomplete" in errors.getvalue()
+    assert (
+        f"OSError: simulated initialization audit persistence failure {fail_on_write}"
+        in errors.getvalue()
+    )
+    assert stderr_lines[-1] == "RuntimeError: simulated primary initialization failure"
+    assert str(original) == "simulated primary initialization failure"
+    assert original.args == ("simulated primary initialization failure",)
+    expected_audit_phase = (
+        "initialization failure record"
+        if fail_on_write == 1
+        else "run quality summary"
+    )
+    assert any(
+        f"{expected_audit_phase} audit persistence failed" in note
+        for note in getattr(original, "__notes__", [])
+    )
+    assert stdout.getvalue() == ""
+    assert recorder.calls == []
+    assert write_count == fail_on_write
+
+    output_root = config.output_root
+    assert not (output_root / run_id).exists()
+    fallback_parent = output_root / ".run-invocations" / run_id
+    invocation_roots = [path for path in fallback_parent.iterdir() if path.is_dir()]
+    assert len(invocation_roots) == 1
+    evidence_root = invocation_roots[0]
+    failure_paths = list(
+        (evidence_root / "audit" / "initialization_failures").glob(
+            "initialization_failure.*.json"
+        )
+    )
+    quality_paths = list(
+        (evidence_root / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(failure_paths) == (1 if fail_on_write == 2 else 0)
+    assert quality_paths == []
+
+    if fail_on_write == 2:
+        failure = json.loads(failure_paths[0].read_text(encoding="utf-8"))
+        assert failure["exception"]["type"] == "RuntimeError"
+        assert failure["exception"]["message"] == (
+            "simulated primary initialization failure"
+        )
+        assert failure_paths[0] in published_before_failure
+    else:
+        assert published_before_failure == {}
+    for path, content in published_before_failure.items():
+        assert path.read_bytes() == content
+
+    assert "initialization_failure." not in errors.getvalue()
+    assert "run_quality_summary." not in errors.getvalue()
+    assert not list(evidence_root.rglob("*.partial"))
+    assert not list(evidence_root.rglob("_START.json"))
+    assert not list(evidence_root.rglob("_STAGE_RESULT.json"))
+    assert not list(evidence_root.rglob("_SUCCESS.json"))
+    assert not list(evidence_root.rglob("_FAILED.*.json"))
+
+
+def test_main_keyboard_interrupt_before_staging_writes_fallback_initialization_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.pipeline as pipeline
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    scope = resolve_scope(config, pilot_cells=100, years=None, hash_mode="pilot")
+    run_id = "keyboard-init-audit"
+    recorder = RecordingHandlers()
+
+    def interrupt_initialization(*_args, **_kwargs):
+        raise KeyboardInterrupt("simulated initialization interrupt")
+
+    monkeypatch.setattr(pipeline, "initialize_run", interrupt_initialization)
+    with pytest.raises(KeyboardInterrupt, match="simulated initialization interrupt"):
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--stage",
+                "assets",
+                "--run-id",
+                run_id,
+                "--pilot-cells",
+                "100",
+                "--hash-mode",
+                "pilot",
+            ],
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+
+    output_root = config.output_root
+    fallback_parent = output_root / ".run-invocations" / run_id
+    invocation_roots = [path for path in fallback_parent.iterdir() if path.is_dir()]
+    assert len(invocation_roots) == 1
+    evidence_root = invocation_roots[0]
+    invocation_id = evidence_root.name
+    failure_paths = list(
+        (evidence_root / "audit" / "initialization_failures").glob(
+            "initialization_failure.*.json"
+        )
+    )
+    summary_paths = list(
+        (evidence_root / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(failure_paths) == len(summary_paths) == 1
+    assert failure_paths[0].name == f"initialization_failure.{invocation_id}.json"
+    assert summary_paths[0].name == f"run_quality_summary.{invocation_id}.json"
+    failure = json.loads(failure_paths[0].read_text(encoding="utf-8"))
+    summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
+
+    assert failure["invocation_id"] == summary["invocation_id"] == invocation_id
+    assert failure["run_id"] == summary["run_id"] == run_id
+    assert failure["requested_stage"] == summary["requested_stage"] == "assets"
+    assert failure["requested_scope"] == summary["requested_scope"] == scope.as_parameters()
+    assert failure["failure_phase"] == summary["failure_phase"] == "INITIALIZE_RUN"
+    assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+    assert failure["exit_status"] == summary["exit_status"] == 130
+    assert failure["exception"]["type"] == "KeyboardInterrupt"
+    assert failure["exception"]["message"] == "simulated initialization interrupt"
+    assert summary["exception"] == failure["exception"]
+    assert failure["evidence_location"] == "output_root_fallback"
+    assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+    assert failure["retrospective"] is summary["retrospective"] is False
+    assert failure["stage_attempt_created"] is False
+    assert failure["stage_partial_created"] is False
+    assert summary["stages"] == []
+    assert recorder.calls == []
+    assert not (output_root / run_id).exists()
+    assert not list(output_root.glob(f".{run_id}.*.initializing.*"))
+    assert not list(evidence_root.rglob("_START.json"))
+    assert not list(evidence_root.rglob("_STAGE_RESULT.json"))
+    assert not list(evidence_root.rglob("_SUCCESS.json"))
+    assert not list(evidence_root.rglob("_FAILED.*.json"))
+    assert not list(evidence_root.rglob("*.partial"))
+
+    lock_dir = output_root / ".run-locks"
+    acquired_paths = list(lock_dir.glob(f"{run_id}.acquired.*.json"))
+    released_paths = list(lock_dir.glob(f"{run_id}.released.*.json"))
+    assert len(acquired_paths) == len(released_paths) == 1
+    acquired = json.loads(acquired_paths[0].read_text(encoding="utf-8"))
+    released = json.loads(released_paths[0].read_text(encoding="utf-8"))
+    lease_id = failure["lease"]["lease_id"]
+    assert acquired["lease_id"] == released["lease_id"] == lease_id
+    assert acquired["run_id"] == released["run_id"] == run_id
+    assert acquired["pid"] == released["pid"] == failure["lease"]["pid"]
+    assert acquired["acquired_at_utc"] == failure["lease"]["acquired_at_utc"]
+    assert acquired["acquired_at_utc"] <= failure["failed_at_utc"]
+    assert failure["failed_at_utc"] <= released["released_at_utc"]
+    assert summary["created_at_utc"] <= released["released_at_utc"]
+    assert (
+        output_root / failure["lease"]["acquired_audit"]
+    ).resolve() == acquired_paths[0].resolve()
+    assert (
+        output_root / failure["lease"]["release_audit_expected"]
+    ).resolve() == released_paths[0].resolve()
+
+
+def test_initialization_exit_status_preserves_system_exit_semantics() -> None:
+    assert _initialization_exit_status(SystemExit(None)) == 2
+    assert _initialization_exit_status(SystemExit(0)) == 2
+    assert _initialization_exit_status(SystemExit(7)) == 7
+    assert _initialization_exit_status(SystemExit("x")) == 1
+
+
+@pytest.mark.parametrize(
+    ("raised_code", "expected_code"),
+    [(None, 2), (0, 2), (7, 7)],
+)
+def test_main_initialization_system_exit_propagates_nonzero_and_writes_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raised_code: int | None,
+    expected_code: int,
+) -> None:
+    import climate_stress.pipeline as pipeline
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"initialization-system-exit-{raised_code}"
+    recorder = RecordingHandlers()
+
+    def exit_initialization(*_args, **_kwargs):
+        raise SystemExit(raised_code)
+
+    monkeypatch.setattr(pipeline, "initialize_run", exit_initialization)
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--stage",
+                "assets",
+                "--run-id",
+                run_id,
+                "--pilot-cells",
+                "100",
+                "--hash-mode",
+                "pilot",
+            ],
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value.code == expected_code
+
+    output_root = config.output_root
+    fallback_parent = output_root / ".run-invocations" / run_id
+    invocation_roots = [path for path in fallback_parent.iterdir() if path.is_dir()]
+    assert len(invocation_roots) == 1
+    evidence_root = invocation_roots[0]
+    invocation_id = evidence_root.name
+    failure_paths = list(
+        (evidence_root / "audit" / "initialization_failures").glob(
+            "initialization_failure.*.json"
+        )
+    )
+    summary_paths = list(
+        (evidence_root / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(failure_paths) == len(summary_paths) == 1
+    assert failure_paths[0].name == f"initialization_failure.{invocation_id}.json"
+    assert summary_paths[0].name == f"run_quality_summary.{invocation_id}.json"
+    failure = json.loads(failure_paths[0].read_text(encoding="utf-8"))
+    summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
+    assert failure["invocation_id"] == summary["invocation_id"] == invocation_id
+    assert failure["run_id"] == summary["run_id"] == run_id
+    assert failure["exception"]["type"] == "SystemExit"
+    assert summary["exception"] == failure["exception"]
+    assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+    assert failure["exit_status"] == summary["exit_status"] == expected_code
+    assert failure["exit_status"] != 0
+    assert failure["evidence_location"] == "output_root_fallback"
+    assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+    assert failure["retrospective"] is summary["retrospective"] is False
+    assert failure["stage_attempt_created"] is False
+    assert failure["stage_partial_created"] is False
+    assert summary["stages"] == []
+    assert recorder.calls == []
+    assert not (output_root / run_id).exists()
+    assert not list(output_root.glob(f".{run_id}.*.initializing.*"))
+
+    lock_dir = output_root / ".run-locks"
+    acquired_paths = list(lock_dir.glob(f"{run_id}.acquired.*.json"))
+    released_paths = list(lock_dir.glob(f"{run_id}.released.*.json"))
+    assert len(acquired_paths) == len(released_paths) == 1
+    acquired = json.loads(acquired_paths[0].read_text(encoding="utf-8"))
+    released = json.loads(released_paths[0].read_text(encoding="utf-8"))
+    lease_id = failure["lease"]["lease_id"]
+    assert acquired["lease_id"] == released["lease_id"] == lease_id
+    assert acquired["acquired_at_utc"] == failure["lease"]["acquired_at_utc"]
+    assert acquired["acquired_at_utc"] <= failure["failed_at_utc"]
+    assert failure["failed_at_utc"] <= released["released_at_utc"]
+    assert summary["created_at_utc"] <= released["released_at_utc"]
+
+
+def test_main_malformed_existing_manifest_writes_complete_initialization_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    source_state = {
+        "available": True,
+        "is_dirty": False,
+        "status_counts": {},
+        "scoped_path_count": 1,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "source_tree_provenance",
+        lambda *_args, **_kwargs: ("c" * 64, source_state),
+    )
+    run_id = "malformed-manifest-audit"
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    recorder = RecordingHandlers()
+    stdout = io.StringIO()
+    assert main(
+        arguments,
+        handlers=recorder.mapping(),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    response = json.loads(stdout.getvalue())
+    run_dir = Path(response["run_dir"])
+    manifest_path = run_dir / "_RUN.json"
+    malformed_manifest = b'{"schema_version": 1, "config_sha256": '
+    manifest_path.write_bytes(malformed_manifest)
+    stage_snapshot = {
+        path.relative_to(run_dir / "stages").as_posix(): path.read_bytes()
+        for path in (run_dir / "stages").rglob("*")
+        if path.is_file()
+    }
+    attempt_snapshot = {
+        path.relative_to(run_dir).as_posix(): path.read_bytes()
+        for path in (run_dir / "audit" / "attempts").glob("*")
+        if path.is_file()
+    }
+    initial_quality = Path(response["quality_summary"])
+    initial_quality_bytes = initial_quality.read_bytes()
+    quality_dir = run_dir / "audit" / "quality_summaries"
+    failure_dir = run_dir / "audit" / "initialization_failures"
+    summaries_before = set(quality_dir.glob("run_quality_summary.*.json"))
+    failures_before = set(failure_dir.glob("initialization_failure.*.json"))
+    initialization_before = set(
+        config.output_root.glob(f".{run_id}.*.initializing.*")
+    )
+
+    errors = io.StringIO()
+    assert main(
+        [*arguments, "--resume"],
+        handlers=recorder.mapping(),
+        stdout=io.StringIO(),
+        stderr=errors,
+    ) == 2
+    assert "JSONDecodeError" in errors.getvalue()
+
+    new_summaries = set(quality_dir.glob("run_quality_summary.*.json")) - summaries_before
+    new_failures = set(failure_dir.glob("initialization_failure.*.json")) - failures_before
+    assert len(new_summaries) == len(new_failures) == 1
+    summary_path = next(iter(new_summaries))
+    failure_path = next(iter(new_failures))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    invocation_id = failure["invocation_id"]
+    assert summary_path.name == f"run_quality_summary.{invocation_id}.json"
+    assert failure_path.name == f"initialization_failure.{invocation_id}.json"
+    assert summary["invocation_id"] == invocation_id
+    assert failure["run_id"] == summary["run_id"] == run_id
+    assert failure["exception"]["type"] == "JSONDecodeError"
+    assert summary["exception"] == failure["exception"]
+    assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+    assert failure["exit_status"] == summary["exit_status"] == 2
+    assert failure["evidence_location"] == "existing_run"
+    assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+    assert failure["retrospective"] is summary["retrospective"] is False
+    assert isinstance(failure["code_git_commit"], str)
+    assert failure["code_git_commit"]
+    assert summary["code_git_commit"] == failure["code_git_commit"]
+    requested = failure["requested_signatures"]
+    assert set(requested) == {
+        "config_sha256",
+        "parameter_sha256",
+        "source_tree_sha256",
+        "environment_sha256",
+    }
+    assert summary["requested_signatures"] == requested
+    assert failure["observed_signatures"] == summary["observed_signatures"] == {}
+    assert requested["config_sha256"] == config.sha256
+    assert requested["parameter_sha256"] == failure["parameter_sha256"]
+    assert requested["source_tree_sha256"] == failure["source_tree_sha256"] == "c" * 64
+    assert requested["environment_sha256"] == failure["environment_sha256"]
+    assert all(isinstance(value, str) and len(value) == 64 for value in requested.values())
+    assert failure["stage_attempt_created"] is False
+    assert failure["stage_partial_created"] is False
+    assert summary["stages"] == []
+
+    assert manifest_path.read_bytes() == malformed_manifest
+    assert initial_quality.read_bytes() == initial_quality_bytes
+    assert {
+        path.relative_to(run_dir / "stages").as_posix(): path.read_bytes()
+        for path in (run_dir / "stages").rglob("*")
+        if path.is_file()
+    } == stage_snapshot
+    assert {
+        path.relative_to(run_dir).as_posix(): path.read_bytes()
+        for path in (run_dir / "audit" / "attempts").glob("*")
+        if path.is_file()
+    } == attempt_snapshot
+    assert set(config.output_root.glob(f".{run_id}.*.initializing.*")) == (
+        initialization_before
+    )
+    assert not list(run_dir.rglob("*.partial"))
+    assert recorder.calls == ["assets"]
+
+
+@pytest.mark.parametrize("escape_kind", ["run_root", "audit_root"])
+def test_initialization_evidence_root_rejects_resolved_path_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    escape_kind: str,
+) -> None:
+    config = load_config(write_config(tmp_path))
+    output_root = config.output_root.resolve(strict=False)
+    output_root.mkdir(parents=True, exist_ok=True)
+    run_id = f"escape-{escape_kind}"
+    invocation_id = f"invocation-{escape_kind}"
+    run_candidate = output_root / run_id
+    outside = (tmp_path / f"outside-{escape_kind}").resolve(strict=False)
+    outside.mkdir(parents=True, exist_ok=False)
+    sentinel = outside / "sentinel.bin"
+    sentinel.write_bytes(b"outside-must-remain-unchanged")
+
+    real_resolve = Path.resolve
+    if escape_kind == "run_root":
+        (outside / "audit").mkdir()
+        escaped_candidate = run_candidate
+    else:
+        run_candidate.mkdir()
+        audit_candidate = run_candidate / "audit"
+        audit_candidate.mkdir()
+        escaped_candidate = audit_candidate
+
+    def simulated_resolve(path: Path, strict: bool = False) -> Path:
+        if path == escaped_candidate:
+            return outside
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", simulated_resolve)
+    evidence_root, location = _initialization_evidence_root(
+        config,
+        run_id=run_id,
+        invocation_id=invocation_id,
+        exc=RuntimeError("simulated path escape"),
+    )
+
+    expected = output_root / ".run-invocations" / run_id / invocation_id
+    assert evidence_root == expected
+    assert location == "output_root_fallback"
+    assert evidence_root.is_dir()
+    assert evidence_root.is_relative_to(output_root)
+    assert sentinel.read_bytes() == b"outside-must-remain-unchanged"
+    assert {path.name for path in outside.iterdir()} == (
+        {"audit", "sentinel.bin"}
+        if escape_kind == "run_root"
+        else {"sentinel.bin"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("escape_kind", "expected_exception"),
+    [
+        ("run_root", "PathOutsideRunError"),
+        ("audit_root", "ResumeMismatchError"),
+    ],
+)
+def test_main_path_escape_writes_only_fallback_initialization_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    escape_kind: str,
+    expected_exception: str,
+) -> None:
+    import climate_stress.runtime as runtime
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    source_state = {
+        "available": True,
+        "is_dirty": False,
+        "status_counts": {},
+        "scoped_path_count": 1,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "source_tree_provenance",
+        lambda *_args, **_kwargs: ("d" * 64, source_state),
+    )
+    output_root = config.output_root.resolve(strict=False)
+    run_id = f"cli-escape-{escape_kind}"
+    run_candidate = output_root / run_id
+    outside = (tmp_path / f"cli-outside-{escape_kind}").resolve(strict=False)
+    outside.mkdir(parents=True, exist_ok=False)
+    sentinel = outside / "sentinel.bin"
+    sentinel.write_bytes(b"outside-cli-sentinel")
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    recorder = RecordingHandlers()
+    existing_run_snapshot: dict[str, bytes] | None = None
+
+    if escape_kind == "audit_root":
+        stdout = io.StringIO()
+        assert main(
+            arguments,
+            handlers=recorder.mapping(),
+            stdout=stdout,
+            stderr=io.StringIO(),
+        ) == 0
+        assert Path(json.loads(stdout.getvalue())["run_dir"]) == run_candidate
+        existing_run_snapshot = {
+            path.relative_to(run_candidate).as_posix(): path.read_bytes()
+            for path in run_candidate.rglob("*")
+            if path.is_file()
+        }
+        escaped_candidate = run_candidate / "audit"
+    else:
+        escaped_candidate = run_candidate
+
+    lock_dir = output_root / ".run-locks"
+    acquired_before = set(lock_dir.glob(f"{run_id}.acquired.*.json"))
+    released_before = set(lock_dir.glob(f"{run_id}.released.*.json"))
+    fallback_parent = output_root / ".run-invocations" / run_id
+    assert not fallback_parent.exists()
+    real_resolve = Path.resolve
+
+    def simulated_resolve(path: Path, strict: bool = False) -> Path:
+        if path == escaped_candidate:
+            return outside
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", simulated_resolve)
+    errors = io.StringIO()
+    assert main(
+        [*arguments, "--resume"],
+        handlers=recorder.mapping(),
+        stdout=io.StringIO(),
+        stderr=errors,
+    ) == 2
+    assert expected_exception in errors.getvalue()
+
+    invocation_roots = [path for path in fallback_parent.iterdir() if path.is_dir()]
+    assert len(invocation_roots) == 1
+    evidence_root = invocation_roots[0]
+    invocation_id = evidence_root.name
+    failure_paths = list(
+        (evidence_root / "audit" / "initialization_failures").glob(
+            "initialization_failure.*.json"
+        )
+    )
+    summary_paths = list(
+        (evidence_root / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(failure_paths) == len(summary_paths) == 1
+    assert failure_paths[0].name == f"initialization_failure.{invocation_id}.json"
+    assert summary_paths[0].name == f"run_quality_summary.{invocation_id}.json"
+    failure = json.loads(failure_paths[0].read_text(encoding="utf-8"))
+    summary = json.loads(summary_paths[0].read_text(encoding="utf-8"))
+    assert failure["invocation_id"] == summary["invocation_id"] == invocation_id
+    assert failure["run_id"] == summary["run_id"] == run_id
+    assert failure["exception"]["type"] == expected_exception
+    assert summary["exception"] == failure["exception"]
+    assert failure["execution_status"] == summary["execution_status"] == "FAILED"
+    assert failure["exit_status"] == summary["exit_status"] == 2
+    assert failure["evidence_location"] == "output_root_fallback"
+    assert failure["capture_mode"] == summary["capture_mode"] == "automatic_runtime"
+    assert failure["retrospective"] is summary["retrospective"] is False
+    assert failure["stage_attempt_created"] is False
+    assert failure["stage_partial_created"] is False
+    assert summary["stages"] == []
+
+    new_acquired = set(lock_dir.glob(f"{run_id}.acquired.*.json")) - acquired_before
+    new_released = set(lock_dir.glob(f"{run_id}.released.*.json")) - released_before
+    assert len(new_acquired) == len(new_released) == 1
+    acquired_path = next(iter(new_acquired))
+    released_path = next(iter(new_released))
+    acquired = json.loads(acquired_path.read_text(encoding="utf-8"))
+    released = json.loads(released_path.read_text(encoding="utf-8"))
+    lease_id = failure["lease"]["lease_id"]
+    assert acquired["lease_id"] == released["lease_id"] == lease_id
+    assert acquired["run_id"] == released["run_id"] == run_id
+    assert acquired["pid"] == released["pid"] == failure["lease"]["pid"]
+    assert acquired["acquired_at_utc"] == failure["lease"]["acquired_at_utc"]
+    assert acquired["acquired_at_utc"] <= failure["failed_at_utc"]
+    assert failure["failed_at_utc"] <= released["released_at_utc"]
+    assert summary["created_at_utc"] <= released["released_at_utc"]
+    assert output_root / failure["lease"]["acquired_audit"] == acquired_path
+    assert output_root / failure["lease"]["release_audit_expected"] == released_path
+
+    assert {path.name for path in outside.iterdir()} == {"sentinel.bin"}
+    assert sentinel.read_bytes() == b"outside-cli-sentinel"
+    assert not list(evidence_root.rglob("*.partial"))
+    assert not list(output_root.glob(f".{run_id}.*.initializing.*"))
+    if existing_run_snapshot is None:
+        assert not run_candidate.exists()
+        assert recorder.calls == []
+    else:
+        assert recorder.calls == ["assets"]
+        assert {
+            path.relative_to(run_candidate).as_posix(): path.read_bytes()
+            for path in run_candidate.rglob("*")
+            if path.is_file()
+        } == existing_run_snapshot
+
+
 def test_resume_requires_explicit_run_id(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     errors = io.StringIO()
@@ -812,6 +1890,102 @@ def test_era_baseline_uses_temperature_history_fraction_not_window_coverage(
     assert observed["minimum_history_fraction"] == pytest.approx(0.61)
     assert observed["minimum_history_fraction"] != pytest.approx(0.97)
     assert outcome.row_counts["threshold_files"] == 1
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_type", "expected_exit_status"),
+    [
+        ("keyboard_interrupt", "KeyboardInterrupt", 130),
+        ("system_exit_7", "SystemExit", 7),
+    ],
+)
+def test_main_stage_control_flow_failure_preserves_attempt_and_quality_evidence(
+    tmp_path: Path,
+    control_flow: str,
+    expected_type: str,
+    expected_exit_status: int,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"stage-control-flow-{control_flow}"
+
+    def fail_with_control_flow(request) -> StageOutcome:
+        (request.work_dir / "partial-evidence.txt").write_text(
+            control_flow,
+            encoding="utf-8",
+        )
+        if control_flow == "keyboard_interrupt":
+            raise KeyboardInterrupt("simulated stage keyboard interrupt")
+        raise SystemExit(7)
+
+    arguments = [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+    expected_exception = (
+        KeyboardInterrupt if control_flow == "keyboard_interrupt" else SystemExit
+    )
+    with pytest.raises(expected_exception) as captured:
+        main(
+            arguments,
+            handlers={"assets": fail_with_control_flow},
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    if control_flow == "keyboard_interrupt":
+        assert str(captured.value) == "simulated stage keyboard interrupt"
+    else:
+        assert captured.value.code == 7
+
+    run_dir = config.output_root / run_id
+    partials = list((run_dir / "stages").glob(".assets.*.partial"))
+    assert len(partials) == 1
+    partial = partials[0]
+    assert (partial / "partial-evidence.txt").read_text(encoding="utf-8") == (
+        control_flow
+    )
+    failed_paths = list(partial.glob("_FAILED.*.json"))
+    attempt_paths = list((run_dir / "audit" / "attempts").glob("assets.*.failed.json"))
+    quality_paths = list(
+        (run_dir / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(failed_paths) == len(attempt_paths) == len(quality_paths) == 1
+    failed = json.loads(failed_paths[0].read_text(encoding="utf-8"))
+    attempt = json.loads(attempt_paths[0].read_text(encoding="utf-8"))
+    quality = json.loads(quality_paths[0].read_text(encoding="utf-8"))
+    assert failed == attempt
+    assert failed["attempt_id"] == attempt["attempt_id"]
+    assert failed["exception_type"] == expected_type
+    assert quality["execution_status"] == "FAILED"
+    assert quality["exception"]["type"] == expected_type
+    assert quality["exit_status"] == expected_exit_status
+    assert quality["exit_status"] != 0
+    assert len(quality["stages"]) == 1
+    assert quality["stages"][0]["stage"] == "assets"
+    assert quality["stages"][0]["execution_status"] == "FAILED"
+    assert Path(quality["stages"][0]["failure_audit"]) == attempt_paths[0]
+    assert not (run_dir / "stages" / "assets" / "_SUCCESS.json").exists()
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+
+    lock_dir = config.output_root / ".run-locks"
+    acquired_paths = list(lock_dir.glob(f"{run_id}.acquired.*.json"))
+    released_paths = list(lock_dir.glob(f"{run_id}.released.*.json"))
+    assert len(acquired_paths) == len(released_paths) == 1
+    acquired = json.loads(acquired_paths[0].read_text(encoding="utf-8"))
+    released = json.loads(released_paths[0].read_text(encoding="utf-8"))
+    assert acquired["lease_id"] == released["lease_id"]
+    assert acquired["run_id"] == released["run_id"] == run_id
+    assert acquired["acquired_at_utc"] <= released["released_at_utc"]
 
 
 def test_failed_stage_writes_structured_attempt_logs_without_deleting_partial(
@@ -2448,3 +3622,1175 @@ def test_partial_scope_real_spei_skips_missing_2w_and_completes_export_validate(
     assert validation["validation_status"] == "PASS"
     assert validation["completion_scope_status"] == "PARTIAL_SCOPE"
     assert validation["gates"]["spei_2w_scope_contract"]["status"] == "PASS"
+
+
+_UNAVAILABLE_STAGE_RESOURCE_KEYS = {
+    "stage_start_current_rss_bytes",
+    "stage_end_current_rss_bytes",
+    "process_lifetime_peak_working_set_bytes",
+    "sampled_start_at_utc",
+    "sampled_end_at_utc",
+    "start_source",
+    "end_source",
+    "execution_mode",
+    "peak_rss_budget_bytes",
+    "budget_exceeded",
+    "resource_sampling_available",
+    "resource_sampling_error",
+}
+
+
+def _failed_stage_arguments(config_path: Path, run_id: str) -> list[str]:
+    return [
+        "--config",
+        str(config_path),
+        "--stage",
+        "assets",
+        "--run-id",
+        run_id,
+        "--pilot-cells",
+        "100",
+        "--hash-mode",
+        "pilot",
+    ]
+
+
+def _single_failed_quality_summary(run_dir: Path) -> dict:
+    paths = list(
+        (run_dir / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert len(paths) == 1
+    return json.loads(paths[0].read_text(encoding="utf-8"))
+
+
+def _assert_single_paired_lease(config, run_id: str) -> None:
+    lock_dir = config.output_root / ".run-locks"
+    acquired_paths = list(lock_dir.glob(f"{run_id}.acquired.*.json"))
+    released_paths = list(lock_dir.glob(f"{run_id}.released.*.json"))
+    assert len(acquired_paths) == len(released_paths) == 1
+    acquired = json.loads(acquired_paths[0].read_text(encoding="utf-8"))
+    released = json.loads(released_paths[0].read_text(encoding="utf-8"))
+    assert acquired["lease_id"] == released["lease_id"]
+    assert acquired["run_id"] == released["run_id"] == run_id
+    assert acquired["acquired_at_utc"] <= released["released_at_utc"]
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [
+        ("keyboard_interrupt", 130),
+        ("system_exit_0", 2),
+        ("system_exit_7", 7),
+    ],
+)
+def test_stage_start_memory_control_flow_failure_is_globally_audited(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"stage-start-memory-{control_flow}"
+    original: BaseException
+    if control_flow == "keyboard_interrupt":
+        original = KeyboardInterrupt("start memory sampling interrupted")
+    elif control_flow == "system_exit_0":
+        original = SystemExit(0)
+    else:
+        original = SystemExit(7)
+    sample_calls = 0
+
+    def fail_first_sample() -> dict:
+        nonlocal sample_calls
+        sample_calls += 1
+        raise original
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "process_memory_snapshot",
+        fail_first_sample,
+    )
+    recorder = RecordingHandlers()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value is original
+    assert sample_calls == 1
+    assert recorder.calls == []
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    attempt_paths = list(
+        (run_dir / "audit" / "attempts").glob("assets.*.failed.json")
+    )
+    assert len(attempt_paths) == 1
+    attempt = json.loads(attempt_paths[0].read_text(encoding="utf-8"))
+    assert attempt["partial_dir"] is None
+    assert attempt["partial_candidates"] == []
+    assert attempt["exit_status"] == expected_exit_status
+    assert attempt["exception_type"] == type(original).__name__
+    assert set(attempt["resources"]) == _UNAVAILABLE_STAGE_RESOURCE_KEYS
+    assert attempt["resources"]["resource_sampling_available"] is False
+    assert attempt["resources"]["resource_sampling_error"] == {
+        "type": type(original).__name__,
+        "message": str(original),
+    }
+    assert attempt["resources"]["start_source"] == "unavailable"
+    assert attempt["resources"]["end_source"] == "unavailable"
+    assert not list((run_dir / "stages").glob(".assets.*.partial"))
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["execution_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "FAILED"
+    assert summary["failure_phase"] == "STAGE_RESOURCE_START"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["audit_issues"] == []
+    assert summary["diagnostic_issues"] == []
+    assert len(summary["stages"]) == 1
+    stage = summary["stages"][0]
+    assert stage["failure_phase"] == "STAGE_RESOURCE_START"
+    assert stage["failure_audit"] == str(attempt_paths[0])
+    assert stage["resources"] == attempt["resources"]
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    _assert_single_paired_lease(config, run_id)
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_handler_control_flow_wins_when_final_resource_diagnostic_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"handler-diagnostic-{control_flow}"
+    original: BaseException = (
+        KeyboardInterrupt("handler interrupted")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+    diagnostic_error = RuntimeError("final resource sampler unavailable")
+    sample_calls = 0
+
+    def sample_then_fail() -> dict:
+        nonlocal sample_calls
+        sample_calls += 1
+        if sample_calls == 1:
+            return _memory_sample(111, 222, source="diagnostic-test")
+        raise diagnostic_error
+
+    def fail_handler(request) -> StageOutcome:
+        (request.work_dir / "partial-evidence.txt").write_text(
+            "handler entered",
+            encoding="utf-8",
+        )
+        raise original
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "process_memory_snapshot",
+        sample_then_fail,
+    )
+    stderr = io.StringIO()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers={"assets": fail_handler},
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+    assert captured.value is original
+    assert sample_calls == 2
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    attempt_paths = list(
+        (run_dir / "audit" / "attempts").glob("assets.*.failed.json")
+    )
+    partials = list((run_dir / "stages").glob(".assets.*.partial"))
+    assert len(attempt_paths) == len(partials) == 1
+    attempt = json.loads(attempt_paths[0].read_text(encoding="utf-8"))
+    mirror_paths = list(partials[0].glob("_FAILED.*.json"))
+    assert len(mirror_paths) == 1
+    assert json.loads(mirror_paths[0].read_text(encoding="utf-8")) == attempt
+    assert attempt["exception_type"] == type(original).__name__
+    resources = attempt["resources"]
+    assert set(resources) == _UNAVAILABLE_STAGE_RESOURCE_KEYS
+    assert resources["stage_start_current_rss_bytes"] == 111
+    assert resources["process_lifetime_peak_working_set_bytes"] == 222
+    assert resources["start_source"] == "diagnostic-test"
+    assert resources["end_source"] == "unavailable"
+    assert resources["resource_sampling_available"] is False
+    assert resources["resource_sampling_error"] == {
+        "type": "RuntimeError",
+        "message": "final resource sampler unavailable",
+    }
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["audit_issues"] == []
+    assert summary["diagnostic_issues"] == [
+        {
+            "phase": "stage resource final sample",
+            "error": {
+                "type": "RuntimeError",
+                "message": "final resource sampler unavailable",
+            },
+            "published_audit_path": None,
+        }
+    ]
+    assert summary["stages"][0]["resources"] == resources
+    assert "DIAGNOSTIC_WARNING:" in stderr.getvalue()
+    assert "final resource sampler unavailable" in stderr.getvalue()
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    _assert_single_paired_lease(config, run_id)
+
+
+@pytest.mark.parametrize("audit_target", ["global", "partial"])
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_stage_failure_audit_write_error_preserves_control_flow_and_quality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    audit_target: str,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"stage-audit-{audit_target}-{control_flow}"
+    original: BaseException = (
+        KeyboardInterrupt("audit-path handler interrupted")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+    audit_error = OSError(f"simulated {audit_target} failure-audit write error")
+    real_write_json_new = pipeline_module._write_json_new
+    stage_audit_writes: list[Path] = []
+
+    def fail_selected_audit(path: Path, payload: dict) -> None:
+        candidate = Path(path)
+        is_global = (
+            candidate.parent.name == "attempts"
+            and candidate.name.startswith("assets.")
+            and candidate.name.endswith(".failed.json")
+        )
+        is_partial = candidate.name.startswith("_FAILED.")
+        if is_global or is_partial:
+            stage_audit_writes.append(candidate)
+        if (audit_target == "global" and is_global) or (
+            audit_target == "partial" and is_partial
+        ):
+            raise audit_error
+        real_write_json_new(candidate, payload)
+
+    def fail_handler(request) -> StageOutcome:
+        (request.work_dir / "partial-evidence.txt").write_text(
+            "handler entered",
+            encoding="utf-8",
+        )
+        raise original
+
+    monkeypatch.setattr(pipeline_module, "_write_json_new", fail_selected_audit)
+    stderr = io.StringIO()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers={"assets": fail_handler},
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+    assert captured.value is original
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    partials = list((run_dir / "stages").glob(".assets.*.partial"))
+    assert len(partials) == 1
+    attempt_paths = list(
+        (run_dir / "audit" / "attempts").glob("assets.*.failed.json")
+    )
+    mirror_paths = list(partials[0].glob("_FAILED.*.json"))
+    if audit_target == "global":
+        assert len(stage_audit_writes) == 1
+        assert attempt_paths == []
+        assert mirror_paths == []
+        expected_phase = "stage attempt global audit"
+        published_path = None
+    else:
+        assert len(stage_audit_writes) == 2
+        assert len(attempt_paths) == 1
+        assert mirror_paths == []
+        expected_phase = "stage attempt partial mirror"
+        published_path = str(attempt_paths[0])
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["execution_status"] == "FAILED"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["diagnostic_issues"] == []
+    assert summary["audit_issues"] == [
+        {
+            "phase": expected_phase,
+            "error": {
+                "type": "OSError",
+                "message": str(audit_error),
+            },
+            "published_audit_path": published_path,
+        }
+    ]
+    stage = summary["stages"][0]
+    assert stage["failure_audit"] == published_path
+    assert stage["exception"]["type"] == type(original).__name__
+    warning = stderr.getvalue()
+    assert "AUDIT_WARNING:" in warning
+    assert "durable evidence is absent or incomplete" in warning
+    assert expected_phase in warning
+    assert str(audit_error) in warning
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    _assert_single_paired_lease(config, run_id)
+
+
+def test_reporter_system_exit_zero_preserves_primary_and_publishes_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = "reporter-system-exit-zero"
+    original = KeyboardInterrupt("handler primary survives reporter failure")
+    audit_error = OSError("simulated global attempt-audit failure")
+    real_write_json_new = pipeline_module._write_json_new
+
+    def fail_global_attempt_audit(path: Path, payload: dict) -> None:
+        candidate = Path(path)
+        if (
+            candidate.parent.name == "attempts"
+            and candidate.name.startswith("assets.")
+            and candidate.name.endswith(".failed.json")
+        ):
+            raise audit_error
+        real_write_json_new(candidate, payload)
+
+    def fail_handler(request) -> StageOutcome:
+        (request.work_dir / "partial-evidence.txt").write_text(
+            "handler entered",
+            encoding="utf-8",
+        )
+        raise original
+
+    class ExitZeroStderr:
+        def write(self, _text: str) -> int:
+            raise SystemExit(0)
+
+        def flush(self) -> None:
+            return None
+
+    fallback = io.StringIO()
+    monkeypatch.setattr(pipeline_module, "_write_json_new", fail_global_attempt_audit)
+    monkeypatch.setattr(pipeline_module.sys, "__stderr__", fallback)
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers={"assets": fail_handler},
+            stdout=io.StringIO(),
+            stderr=ExitZeroStderr(),
+        )
+    assert captured.value is original
+
+    run_dir = config.output_root / run_id
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["exit_status"] == 130
+    assert summary["primary_exception"]["type"] == "KeyboardInterrupt"
+    assert summary["audit_issues"] == [
+        {
+            "phase": "stage attempt global audit",
+            "error": {
+                "type": "OSError",
+                "message": str(audit_error),
+            },
+            "published_audit_path": None,
+        }
+    ]
+    assert summary["stages"][0]["execution_status"] == "FAILED"
+    assert summary["lease"]["released"] is True
+    assert summary["lease"]["release_audit_persisted"] is True
+    notes = getattr(original, "__notes__", [])
+    assert any(
+        "Failed to emit the audit warning" in note and "SystemExit" in note
+        for note in notes
+    )
+    assert "Failed to emit the audit warning" in fallback.getvalue()
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    _assert_single_paired_lease(config, run_id)
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_real_stage_publish_signal_keeps_success_without_failed_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    import climate_stress.runtime as runtime_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"post-publish-{control_flow}"
+    original: BaseException = (
+        KeyboardInterrupt("interrupted immediately after stage publish")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+    real_rename = runtime_module.os.rename
+    stage_publish_signaled = False
+
+    def rename_then_signal(source, destination) -> None:
+        nonlocal stage_publish_signaled
+        real_rename(source, destination)
+        target = Path(destination)
+        if (
+            not stage_publish_signaled
+            and target.name == "assets"
+            and target.parent.name == "stages"
+        ):
+            stage_publish_signaled = True
+            raise original
+
+    monkeypatch.setattr(runtime_module.os, "rename", rename_then_signal)
+    recorder = RecordingHandlers()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value is original
+    assert stage_publish_signaled is True
+    assert recorder.calls == ["assets"]
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    assert (run_dir / "stages" / "assets" / "_SUCCESS.json").is_file()
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "audit" / "attempts").glob("*.failed.json"))
+    assert not list((run_dir / "stages").glob(".assets.*.partial"))
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "COMPLETED"
+    assert summary["failure_phase"] == "STAGE_POST_PUBLISH"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert len(summary["stages"]) == 1
+    stage = summary["stages"][0]
+    assert stage["execution_status"] == "COMPLETED"
+    assert stage["failure_phase"] == "STAGE_POST_PUBLISH"
+    assert stage["invocation_interrupted_after_stage_publish"] is True
+    assert stage["failure_audit"] is None
+    _assert_single_paired_lease(config, run_id)
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_resume_deep_success_verification_signal_keeps_existing_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"resume-deep-verify-{control_flow}"
+    arguments = _failed_stage_arguments(config_path, run_id)
+    recorder = RecordingHandlers()
+    first_stdout = io.StringIO()
+    assert main(
+        arguments,
+        handlers=recorder.mapping(),
+        stdout=first_stdout,
+        stderr=io.StringIO(),
+    ) == 0
+    run_dir = config.output_root / run_id
+    success_path = run_dir / "stages" / "assets" / "_SUCCESS.json"
+    success_before = success_path.read_bytes()
+    original: BaseException = (
+        KeyboardInterrupt("resume deep validation interrupted")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+
+    def interrupt_deep_verification(self, stage, marker) -> None:
+        assert stage == "assets"
+        assert marker["stage"] == "assets"
+        raise original
+
+    monkeypatch.setattr(
+        ClimateStressPipeline,
+        "_verify_completed_stage",
+        interrupt_deep_verification,
+    )
+    with pytest.raises(type(original)) as captured:
+        main(
+            [*arguments, "--resume"],
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value is original
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+    assert recorder.calls == ["assets"]
+    assert success_path.read_bytes() == success_before
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "audit" / "attempts").glob("*.failed.json"))
+    assert not list((run_dir / "stages").glob(".assets.*.partial"))
+
+    summaries = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (run_dir / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    ]
+    assert len(summaries) == 2
+    failed = [item for item in summaries if item["invocation_status"] == "FAILED"]
+    assert len(failed) == 1
+    summary = failed[0]
+    assert summary["stage_execution_status"] == "COMPLETED"
+    assert summary["failure_phase"] == "STAGE_RESUME_VERIFY"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["release_exception"] is None
+    assert len(summary["stages"]) == 1
+    stage = summary["stages"][0]
+    assert stage["execution_status"] == "COMPLETED"
+    assert stage["failure_phase"] == "STAGE_RESUME_VERIFY"
+    assert stage["resume_verification_completed"] is False
+    assert stage["invocation_interrupted_after_stage_publish"] is False
+    assert stage["failure_audit"] is None
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_success_quality_record_append_signal_keeps_published_stage_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"success-record-append-{control_flow}"
+    original: BaseException = (
+        KeyboardInterrupt("success quality record append interrupted")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+    real_run_one_impl = ClimateStressPipeline._run_one_impl
+
+    class SignalOnceList(list):
+        signaled = False
+
+        def append(self, value) -> None:
+            if not self.signaled:
+                self.signaled = True
+                raise original
+            super().append(value)
+
+    def run_then_arm_quality_append(self, stage, resource_start):
+        result = real_run_one_impl(self, stage, resource_start)
+        self.quality_records = SignalOnceList(self.quality_records)
+        return result
+
+    monkeypatch.setattr(
+        ClimateStressPipeline,
+        "_run_one_impl",
+        run_then_arm_quality_append,
+    )
+    recorder = RecordingHandlers()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers=recorder.mapping(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value is original
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+    assert recorder.calls == ["assets"]
+
+    run_dir = config.output_root / run_id
+    assert (run_dir / "stages" / "assets" / "_SUCCESS.json").is_file()
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "audit" / "attempts").glob("*.failed.json"))
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["stage_execution_status"] == "COMPLETED"
+    assert summary["failure_phase"] == "STAGE_POST_PUBLISH"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert [stage["execution_status"] for stage in summary["stages"]] == [
+        "COMPLETED"
+    ]
+    _assert_single_paired_lease(config, run_id)
+
+
+def test_failed_stage_never_mirrors_into_newer_stale_partial(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = "failure-mirror-current-session-only"
+    observed: dict[str, Path] = {}
+
+    def fail_with_newer_stale_partial(request) -> StageOutcome:
+        observed["active"] = request.work_dir
+        stale = request.context.stages_dir / ".assets.zzz-stale.partial"
+        stale.mkdir()
+        (stale / "unrelated.txt").write_text("preserve", encoding="utf-8")
+        observed["stale"] = stale
+        raise RuntimeError("simulated current-session stage failure")
+
+    stderr = io.StringIO()
+    exit_code = main(
+        _failed_stage_arguments(config_path, run_id),
+        handlers={"assets": fail_with_newer_stale_partial},
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+    assert exit_code == 2
+    assert "simulated current-session stage failure" in stderr.getvalue()
+
+    active = observed["active"]
+    stale = observed["stale"]
+    assert active.is_dir() and stale.is_dir()
+    active_failures = list(active.glob("_FAILED.*.json"))
+    assert len(active_failures) == 1
+    assert list(stale.glob("_FAILED.*.json")) == []
+    assert (stale / "unrelated.txt").read_text(encoding="utf-8") == "preserve"
+
+    run_dir = config.output_root / run_id
+    attempts = list((run_dir / "audit" / "attempts").glob("assets.*.failed.json"))
+    assert len(attempts) == 1
+    attempt = json.loads(attempts[0].read_text(encoding="utf-8"))
+    assert attempt["partial_dir"] == active.relative_to(run_dir).as_posix()
+    assert attempt["partial_mirror_selection"] == "current_stage_session_only"
+    assert set(attempt["partial_candidates"]) == {
+        active.relative_to(run_dir).as_posix(),
+        stale.relative_to(run_dir).as_posix(),
+    }
+    assert json.loads(active_failures[0].read_text(encoding="utf-8")) == attempt
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["stages"][0]["failure_audit"] == str(attempts[0])
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+
+
+def _install_one_release_audit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    message: str,
+) -> None:
+    import climate_stress.runtime as runtime_module
+
+    real_write_lock_audit = runtime_module._write_lock_audit
+    failed = False
+
+    def fail_first_release(path: Path, payload) -> None:
+        nonlocal failed
+        if not failed and ".released." in path.name:
+            failed = True
+            raise OSError(message)
+        real_write_lock_audit(path, payload)
+
+    monkeypatch.setattr(runtime_module, "_write_lock_audit", fail_first_release)
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [
+        ("keyboard_interrupt", 130),
+        ("system_exit_none", 2),
+        ("system_exit_0", 2),
+        ("system_exit_7", 7),
+        ("os_error", 2),
+    ],
+)
+def test_cli_response_write_failure_is_finalized_after_completed_stage(
+    tmp_path: Path,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"response-write-{control_flow}"
+    if control_flow == "keyboard_interrupt":
+        original: BaseException = KeyboardInterrupt(
+            "simulated CLI response interrupt"
+        )
+    elif control_flow == "system_exit_none":
+        original = SystemExit()
+    elif control_flow == "system_exit_0":
+        original = SystemExit(0)
+    elif control_flow == "system_exit_7":
+        original = SystemExit(7)
+    else:
+        original = OSError("simulated CLI response write failure")
+
+    class FailingResponseStream:
+        def write(self, _text: str) -> int:
+            raise original
+
+        def flush(self) -> None:
+            return None
+
+    recorder = RecordingHandlers()
+    stderr = io.StringIO()
+    if isinstance(original, (KeyboardInterrupt, SystemExit)):
+        with pytest.raises(type(original)) as captured:
+            main(
+                _failed_stage_arguments(config_path, run_id),
+                handlers=recorder.mapping(),
+                stdout=FailingResponseStream(),
+                stderr=stderr,
+            )
+        assert captured.value is original
+        if isinstance(original, SystemExit):
+            assert original.code == expected_exit_status
+    else:
+        assert main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers=recorder.mapping(),
+            stdout=FailingResponseStream(),
+            stderr=stderr,
+        ) == expected_exit_status
+
+    assert recorder.calls == ["assets"]
+    run_dir = config.output_root / run_id
+    assert (run_dir / "stages" / "assets" / "_SUCCESS.json").is_file()
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "audit" / "attempts").glob("*.failed.json"))
+    assert not list((run_dir / "stages").glob(".assets.*.partial"))
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "COMPLETED"
+    assert summary["failure_phase"] == "RESPONSE_WRITE"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["release_exception"] is None
+    assert [stage["execution_status"] for stage in summary["stages"]] == [
+        "COMPLETED"
+    ]
+    assert summary["summary_written_after_lease_release_attempt"] is True
+    assert summary["summary_written_after_lease_release"] is True
+    lease = summary["lease"]
+    assert lease["release_attempted_at_utc"] <= lease["release_terminal_at_utc"]
+    assert lease["release_terminal_at_utc"] == lease["released_at_utc"]
+    assert lease["released"] is True
+    assert "AUDIT_WARNING: CLI response delivery failed" in stderr.getvalue()
+    _assert_single_paired_lease(config, run_id)
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [
+        ("keyboard_interrupt", 130),
+        ("system_exit_0", 2),
+        ("system_exit_7", 7),
+    ],
+)
+def test_main_default_handler_setup_control_flow_is_audited_after_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"default-handler-setup-{control_flow}"
+    if control_flow == "keyboard_interrupt":
+        original: BaseException = KeyboardInterrupt("default handler setup interrupted")
+    elif control_flow == "system_exit_0":
+        original = SystemExit(0)
+    else:
+        original = SystemExit(7)
+
+    def fail_default_handlers():
+        raise original
+
+    monkeypatch.setattr(pipeline_module, "default_handlers", fail_default_handlers)
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert captured.value is original
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "NOT_STARTED"
+    assert summary["failure_phase"] == "STAGE_SETUP"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["release_exception"] is None
+    assert summary["stages"] == []
+    assert summary["lease"]["released"] is True
+    assert summary["lease"]["release_audit_present"] is True
+    assert summary["run_state_frozen_while_lease_held"] is True
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "stages").glob(".*.partial"))
+    _assert_single_paired_lease(config, run_id)
+
+
+def test_main_release_only_failure_keeps_completed_stage_and_marks_invocation_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = "release-only-after-stage-success"
+    _install_one_release_audit_failure(
+        monkeypatch,
+        message="simulated main release-only audit failure",
+    )
+    recorder = RecordingHandlers()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        _failed_stage_arguments(config_path, run_id),
+        handlers=recorder.mapping(),
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+    assert exit_code == 2
+    assert recorder.calls == ["assets"]
+
+    run_dir = config.output_root / run_id
+    success = run_dir / "stages" / "assets" / "_SUCCESS.json"
+    assert success.is_file()
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list((run_dir / "audit" / "attempts").glob("*.failed.json"))
+    assert not list((run_dir / "stages").glob(".*.partial"))
+
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "COMPLETED"
+    assert summary["failure_phase"] == "LEASE_RELEASE"
+    assert summary["exit_status"] == 2
+    assert summary["primary_exception"] is None
+    assert summary["release_exception"]["type"] == "RunLockError"
+    assert summary["exception"] == summary["release_exception"]
+    assert [stage["execution_status"] for stage in summary["stages"]] == [
+        "COMPLETED"
+    ]
+    assert summary["lease"]["release_attempted"] is True
+    assert summary["lease"]["released"] is False
+    assert summary["lease"]["release_audit_persisted"] is False
+    assert summary["lease"]["os_unlock_succeeded"] is True
+    assert summary["lease"]["handle_closed"] is True
+    assert summary["lease"]["release_audit_present"] is False
+    assert summary["summary_written_after_lease_release_attempt"] is True
+    assert summary["summary_written_after_lease_release"] is False
+    assert summary["run_state_frozen_while_lease_held"] is True
+
+    lock_dir = config.output_root / ".run-locks"
+    assert len(list(lock_dir.glob(f"{run_id}.acquired.*.json"))) == 1
+    assert list(lock_dir.glob(f"{run_id}.released.*.json")) == []
+    assert "AUDIT_WARNING:" in stderr.getvalue()
+    assert "simulated main release-only audit failure" in stderr.getvalue()
+    assert stderr.getvalue().splitlines()[-1].startswith("RunLockError: ")
+
+
+@pytest.mark.parametrize(
+    ("control_flow", "expected_exit_status"),
+    [("keyboard_interrupt", 130), ("system_exit_7", 7)],
+)
+def test_main_handler_failure_remains_primary_when_release_audit_also_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: str,
+    expected_exit_status: int,
+) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = f"handler-and-release-{control_flow}"
+    original: BaseException = (
+        KeyboardInterrupt("handler primary interrupt")
+        if control_flow == "keyboard_interrupt"
+        else SystemExit(7)
+    )
+    _install_one_release_audit_failure(
+        monkeypatch,
+        message=f"simulated release failure after {control_flow}",
+    )
+
+    def fail_handler(request) -> StageOutcome:
+        (request.work_dir / "partial-evidence.txt").write_text(
+            "handler entered",
+            encoding="utf-8",
+        )
+        raise original
+
+    stderr = io.StringIO()
+    with pytest.raises(type(original)) as captured:
+        main(
+            _failed_stage_arguments(config_path, run_id),
+            handlers={"assets": fail_handler},
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+    assert captured.value is original
+    if isinstance(original, SystemExit):
+        assert original.code == expected_exit_status
+
+    run_dir = config.output_root / run_id
+    summary = _single_failed_quality_summary(run_dir)
+    assert summary["invocation_status"] == "FAILED"
+    assert summary["stage_execution_status"] == "FAILED"
+    assert summary["failure_phase"] == "STAGE_HANDLER"
+    assert summary["exit_status"] == expected_exit_status
+    assert summary["exception"]["type"] == type(original).__name__
+    assert summary["primary_exception"]["type"] == type(original).__name__
+    assert summary["release_exception"]["type"] == "RunLockError"
+    assert summary["stages"][0]["execution_status"] == "FAILED"
+    assert summary["stages"][0]["exit_status"] == expected_exit_status
+    assert summary["lease"]["release_attempted"] is True
+    assert summary["lease"]["released"] is False
+    assert summary["lease"]["release_audit_persisted"] is False
+    assert summary["lease"]["os_unlock_succeeded"] is True
+    assert summary["lease"]["handle_closed"] is True
+    assert summary["lease"]["release_audit_present"] is False
+    assert not list(run_dir.rglob("_SUCCESS.json"))
+    partials = list((run_dir / "stages").glob(".assets.*.partial"))
+    assert len(partials) == 1
+    assert len(list(partials[0].glob("_FAILED.*.json"))) == 1
+    assert "AUDIT_WARNING:" in stderr.getvalue()
+    assert f"simulated release failure after {control_flow}" in stderr.getvalue()
+
+
+def test_main_completed_summary_write_failure_is_visible_and_nonzero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = "completed-summary-write-failure"
+    real_write_json_atomic_new = pipeline_module._write_json_atomic_new
+    summary_write_calls = 0
+
+    def fail_completed_summary(path, payload, *, evidence_root):
+        nonlocal summary_write_calls
+        if path.name.startswith("run_quality_summary."):
+            summary_write_calls += 1
+            raise OSError("simulated completed summary write failure")
+        return real_write_json_atomic_new(
+            path,
+            payload,
+            evidence_root=evidence_root,
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_write_json_atomic_new",
+        fail_completed_summary,
+    )
+    recorder = RecordingHandlers()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    exit_code = main(
+        _failed_stage_arguments(config_path, run_id),
+        handlers=recorder.mapping(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == 2
+    assert summary_write_calls == 1
+    assert recorder.calls == ["assets"]
+    response = json.loads(stdout.getvalue())
+    assert response["quality_summary_state_at_response_write"] == "PENDING"
+    assert response["quality_summary_finalized_on_process_exit"] is True
+    assert "AUDIT_WARNING:" in stderr.getvalue()
+    assert "completed run quality summary audit persistence failed" in stderr.getvalue()
+    assert "simulated completed summary write failure" in stderr.getvalue()
+
+    run_dir = config.output_root / run_id
+    assert (run_dir / "stages" / "assets" / "_SUCCESS.json").is_file()
+    assert not list(run_dir.rglob("_FAILED.*.json"))
+    assert not list(
+        (run_dir / "audit" / "quality_summaries").glob(
+            "run_quality_summary.*.json"
+        )
+    )
+    assert not Path(response["quality_summary"]).exists()
+    _assert_single_paired_lease(config, run_id)
+
+
+def test_same_run_invocations_publish_unique_lease_frozen_summaries_without_cross_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import climate_stress.pipeline as pipeline_module
+
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    run_id = "same-run-frozen-summary"
+    run_dir = config.output_root / run_id
+    spei_audit_path = run_dir / "stages" / "spei" / "spei_2w_audit.json"
+    output_contract_path = (
+        run_dir / "stages" / "export" / "bundle" / "output_contract.json"
+    )
+
+    def assets_with_initial_summary_state(request) -> StageOutcome:
+        artifact = request.work_dir / "assets.txt"
+        artifact.write_text("assets", encoding="utf-8")
+        spei_audit_path.parent.mkdir(parents=True, exist_ok=True)
+        spei_audit_path.write_text(
+            json.dumps({"numeric_executed": False}),
+            encoding="utf-8",
+        )
+        output_contract_path.parent.mkdir(parents=True, exist_ok=True)
+        output_contract_path.write_text(
+            json.dumps({"spei_2w": {"output_included": False}}),
+            encoding="utf-8",
+        )
+        return StageOutcome(artifacts={"artifact": artifact}, row_counts={"rows": 1})
+
+    real_publish_quality_summary = pipeline_module._publish_quality_summary
+    prepared_payloads: list[dict] = []
+    publication_lock = threading.Lock()
+    first_publish_waiting = threading.Event()
+    allow_first_publish = threading.Event()
+
+    def interleave_after_release_before_publish(prepared, **kwargs):
+        lease = kwargs["lease"]
+        assert lease.release_attempted is True
+        assert lease.released is True
+        with publication_lock:
+            publish_index = len(prepared_payloads)
+            prepared_payloads.append(dict(prepared.payload))
+        if publish_index == 0:
+            assert prepared.payload["spei_2w_numeric_executed"] is False
+            assert prepared.payload["spei_2w_output_included"] is False
+            spei_audit_path.write_text(
+                json.dumps({"numeric_executed": True}),
+                encoding="utf-8",
+            )
+            output_contract_path.write_text(
+                json.dumps({"spei_2w": {"output_included": True}}),
+                encoding="utf-8",
+            )
+            first_publish_waiting.set()
+            if not allow_first_publish.wait(timeout=20):
+                raise TimeoutError("first invocation was not released to publish")
+        return real_publish_quality_summary(prepared, **kwargs)
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_publish_quality_summary",
+        interleave_after_release_before_publish,
+    )
+    first_stdout = io.StringIO()
+    first_stderr = io.StringIO()
+    second_stdout = io.StringIO()
+    second_stderr = io.StringIO()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_future = executor.submit(
+            main,
+            _failed_stage_arguments(config_path, run_id),
+            handlers={"assets": assets_with_initial_summary_state},
+            stdout=first_stdout,
+            stderr=first_stderr,
+        )
+        try:
+            assert first_publish_waiting.wait(timeout=20)
+            second_code = main(
+                [*_failed_stage_arguments(config_path, run_id), "--resume"],
+                handlers={"assets": assets_with_initial_summary_state},
+                stdout=second_stdout,
+                stderr=second_stderr,
+            )
+        finally:
+            allow_first_publish.set()
+        first_code = first_future.result(timeout=20)
+
+    assert first_code == 0, first_stderr.getvalue()
+    assert second_code == 0, second_stderr.getvalue()
+    assert len(prepared_payloads) == 2
+
+    first_path = Path(json.loads(first_stdout.getvalue())["quality_summary"])
+    second_path = Path(json.loads(second_stdout.getvalue())["quality_summary"])
+    assert first_path != second_path
+    assert first_path.parent == second_path.parent == (
+        run_dir / "audit" / "quality_summaries"
+    )
+    assert len(list(first_path.parent.glob("run_quality_summary.*.json"))) == 2
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    second = json.loads(second_path.read_text(encoding="utf-8"))
+    assert first["invocation_id"] != second["invocation_id"]
+    assert first["lease"]["lease_id"] != second["lease"]["lease_id"]
+    assert first["spei_2w_numeric_executed"] is False
+    assert first["spei_2w_output_included"] is False
+    assert second["spei_2w_numeric_executed"] is True
+    assert second["spei_2w_output_included"] is True
+    assert first["run_state_frozen_while_lease_held"] is True
+    assert second["run_state_frozen_while_lease_held"] is True
+    assert first["summary_written_after_lease_release"] is True
+    assert second["summary_written_after_lease_release"] is True
+    for summary in (first, second):
+        lease = summary["lease"]
+        assert lease["release_attempted_at_utc"] <= lease["release_terminal_at_utc"]
+        assert lease["release_terminal_at_utc"] == lease["released_at_utc"]
+        assert summary["summary_written_after_lease_release_attempt"] is True
+    assert first["stages"][0]["execution_status"] == "COMPLETED"
+    assert second["stages"][0]["execution_status"] == "SKIPPED_SUCCESS_MARKER"
+    assert len(
+        list((config.output_root / ".run-locks").glob(f"{run_id}.acquired.*.json"))
+    ) == 2
+    assert len(
+        list((config.output_root / ".run-locks").glob(f"{run_id}.released.*.json"))
+    ) == 2

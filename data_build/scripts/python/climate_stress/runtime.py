@@ -195,27 +195,118 @@ class RunLock:
     lease_id: str
     metadata: dict[str, Any]
     handle: Any
+    release_attempted: bool = False
     released: bool = False
+    release_error: BaseException | None = None
+    release_attempted_at_utc: str | None = None
+    release_terminal_at_utc: str | None = None
+    released_at_utc: str | None = None
+    release_audit_persisted: bool | None = None
+    release_timestamp_recorded: bool | None = None
+    os_unlock_succeeded: bool | None = None
+    handle_closed: bool | None = None
 
     def release(self) -> None:
-        if self.released:
+        if self.release_attempted:
             return
         audit_error: BaseException | None = None
+        attempt_timestamp_error: BaseException | None = None
+        terminal_timestamp_error: BaseException | None = None
+        unlock_error: BaseException | None = None
+        close_error: BaseException | None = None
+        release_attempted_at_utc: str | None = None
+        release_terminal_at_utc: str | None = None
+        try:
+            release_attempted_at_utc = utc_now()
+        except BaseException as exc:
+            attempt_timestamp_error = exc
+        try:
+            try:
+                _unlock_file(self.handle)
+            except BaseException as exc:
+                unlock_error = exc
+        finally:
+            try:
+                self.handle.close()
+            except BaseException as exc:
+                close_error = exc
+        release_operation_succeeded = (
+            unlock_error is None and close_error is None
+        )
+        try:
+            release_terminal_at_utc = utc_now()
+        except BaseException as exc:
+            terminal_timestamp_error = exc
+        released_at_utc = (
+            release_terminal_at_utc if release_operation_succeeded else None
+        )
         try:
             _write_lock_audit(
                 self.path.parent
                 / f"{self.metadata['run_id']}.released.{self.lease_id}.json",
-                {**self.metadata, "released_at_utc": utc_now()},
+                {
+                    **self.metadata,
+                    "release_attempted_at_utc": release_attempted_at_utc,
+                    "release_terminal_at_utc": release_terminal_at_utc,
+                    "released_at_utc": released_at_utc,
+                    "release_attempted": True,
+                    "released": (
+                        release_operation_succeeded
+                        and attempt_timestamp_error is None
+                        and terminal_timestamp_error is None
+                    ),
+                    "release_timestamp_recorded": (
+                        attempt_timestamp_error is None
+                        and terminal_timestamp_error is None
+                    ),
+                    "os_unlock_succeeded": unlock_error is None,
+                    "handle_closed": close_error is None,
+                },
             )
         except BaseException as exc:
             audit_error = exc
-        try:
-            _unlock_file(self.handle)
         finally:
-            self.handle.close()
-            self.released = True
-        if audit_error is not None:
-            raise RunLockError("Failed to persist run-lock release audit") from audit_error
+            self.release_attempted = True
+            self.release_attempted_at_utc = release_attempted_at_utc
+            self.release_terminal_at_utc = release_terminal_at_utc
+            self.released_at_utc = released_at_utc
+            self.release_audit_persisted = audit_error is None
+            self.release_timestamp_recorded = (
+                attempt_timestamp_error is None
+                and terminal_timestamp_error is None
+            )
+            self.os_unlock_succeeded = unlock_error is None
+            self.handle_closed = close_error is None
+        failures = [
+            ("release attempt timestamp", attempt_timestamp_error),
+            ("release terminal timestamp", terminal_timestamp_error),
+            ("release audit", audit_error),
+            ("OS unlock", unlock_error),
+            ("lock handle close", close_error),
+        ]
+        active_failures = [
+            (label, error) for label, error in failures if error is not None
+        ]
+        self.released = not active_failures
+        if active_failures:
+            detail = "; ".join(
+                f"{label}={type(error).__name__}: {error}"
+                for label, error in active_failures
+            )
+            prefix = (
+                "Failed to persist run-lock release audit"
+                if audit_error is not None
+                and attempt_timestamp_error is None
+                and terminal_timestamp_error is None
+                and unlock_error is None
+                and close_error is None
+                else "Failed to complete run-lock release"
+            )
+            release_failure = RunLockError(f"{prefix}: {detail}")
+            first_cause = active_failures[0][1]
+            release_failure.__cause__ = first_cause
+            self.release_error = release_failure
+            raise release_failure from first_cause
 
 
 def _write_lock_audit(path: Path, payload: Mapping[str, Any]) -> None:
@@ -327,7 +418,29 @@ def exclusive_run_lock(
     )
     try:
         yield lock
-    finally:
+    except BaseException as active_error:
+        try:
+            lock.release()
+        except BaseException as release_error:
+            release_cause = release_error.__cause__
+            cause_detail = (
+                ""
+                if release_cause is None
+                else (
+                    f"; cause={type(release_cause).__name__}: "
+                    f"{release_cause}"
+                )
+            )
+            try:
+                active_error.add_note(
+                    "Failed to persist or complete run-lock release while preserving "
+                    f"the active {type(active_error).__name__}: "
+                    f"{type(release_error).__name__}: {release_error}{cause_detail}"
+                )
+            except BaseException:
+                pass
+        raise
+    else:
         lock.release()
 
 
@@ -720,6 +833,7 @@ def _preserve_failed_initialization(
     staging_dir: Path,
     *,
     run_id: str,
+    invocation_id: str | None,
     exc: BaseException,
 ) -> Path | None:
     """Best-effort annotation and unique rename of a failed staging tree."""
@@ -729,6 +843,7 @@ def _preserve_failed_initialization(
     payload = {
         "schema_version": 1,
         "run_id": run_id,
+        "invocation_id": invocation_id,
         "failed_at_utc": utc_now(),
         "owner": getpass.getuser(),
         "pid": os.getpid(),
@@ -756,6 +871,41 @@ def _preserve_failed_initialization(
     return incomplete
 
 
+def _annotate_initialization_exception(
+    exc: BaseException,
+    context: RunContext,
+    *,
+    evidence_dir: Path | None = None,
+    observed_signatures: Mapping[str, Any] | None = None,
+) -> None:
+    """Attach JSON-safe requested-run evidence without changing exception text."""
+
+    requested = {
+        "run_id": context.run_id,
+        "run_dir": str(context.run_dir),
+        "parameters": context.parameters,
+        "scope_profile": context.scope_profile,
+        "completion_scope_status": context.completion_scope_status,
+        "code_git_commit": context.code_git_commit,
+        "requested_signatures": {
+            "config_sha256": context.config.sha256,
+            "parameter_sha256": context.parameter_sha256,
+            "source_tree_sha256": context.source_tree_sha256,
+            "environment_sha256": context.environment_sha256,
+        },
+        "observed_signatures": dict(observed_signatures or {}),
+        "initialization_evidence_dir": (
+            None if evidence_dir is None else str(evidence_dir)
+        ),
+    }
+    try:
+        setattr(exc, "initialization_audit_context", _jsonable(requested))
+    except (AttributeError, TypeError):
+        # The original exception remains authoritative if a third-party
+        # exception type does not permit attached diagnostic attributes.
+        pass
+
+
 def initialize_run(
     config: PipelineConfig,
     *,
@@ -763,10 +913,13 @@ def initialize_run(
     parameters: Mapping[str, Any] | None = None,
     resume: bool = False,
     repo_root: str | Path | None = None,
+    invocation_id: str | None = None,
 ) -> RunContext:
     """Create a new immutable run directory or validate an existing one."""
 
     _validate_run_id(run_id)
+    if invocation_id is not None:
+        _validate_run_id(invocation_id)
     normalized = _jsonable(dict(parameters or {}))
     signature = parameter_signature(normalized)
     source_digest, source_state = source_tree_provenance(
@@ -775,7 +928,8 @@ def initialize_run(
     environment_digest, environment_state = runtime_environment_provenance(
         repo_root=repo_root
     )
-    run_dir = (config.output_root / run_id).resolve(strict=False)
+    output_root = config.output_root.resolve(strict=False)
+    run_dir = (output_root / run_id).resolve(strict=False)
     context = RunContext(
         config=config,
         run_id=run_id,
@@ -791,42 +945,107 @@ def initialize_run(
         completion_scope_status=config.completion_scope_status,
     )
 
-    if run_dir.exists():
-        if not resume:
-            raise FileExistsError(run_dir)
-        if not run_dir.is_dir() or not context.manifest_path.is_file():
-            raise ResumeMismatchError(f"Run manifest is missing: {context.manifest_path}")
-        manifest = _load_json(context.manifest_path)
-        expected = (config.sha256, signature, source_digest, environment_digest)
-        observed = (
-            manifest.get("config_sha256"),
-            manifest.get("parameter_sha256"),
-            manifest.get("source_tree_sha256"),
-            manifest.get("environment_sha256"),
+    try:
+        relative_run_dir = run_dir.relative_to(output_root)
+    except ValueError:
+        exc = PathOutsideRunError(
+            f"Resolved run directory escapes output root: {run_dir}"
         )
-        if observed != expected:
-            raise ResumeMismatchError(
-                "Run config, parameter, source signature, or environment signature "
-                "does not match the existing run"
+        _annotate_initialization_exception(exc, context)
+        raise exc
+    if relative_run_dir.parts != (run_id,):
+        exc = PathOutsideRunError(
+            "Resolved run directory is not the dedicated direct child of "
+            f"output root for {run_id!r}: {run_dir}"
+        )
+        _annotate_initialization_exception(exc, context)
+        raise exc
+
+    try:
+        if run_dir.exists():
+            if not resume:
+                exc = FileExistsError(run_dir)
+                _annotate_initialization_exception(exc, context)
+                raise exc
+            manifest_path = context.manifest_path.resolve(strict=False)
+            try:
+                relative_manifest = manifest_path.relative_to(run_dir)
+            except ValueError:
+                relative_manifest = None
+            if (
+                not run_dir.is_dir()
+                or relative_manifest is None
+                or relative_manifest.parts != (RUN_MANIFEST,)
+                or not manifest_path.is_file()
+            ):
+                exc = ResumeMismatchError(
+                    "Run manifest is missing or does not resolve to the dedicated "
+                    f"run child: {context.manifest_path}"
+                )
+                _annotate_initialization_exception(exc, context)
+                raise exc
+            manifest = _load_json(manifest_path)
+            expected = (config.sha256, signature, source_digest, environment_digest)
+            observed = (
+                manifest.get("config_sha256"),
+                manifest.get("parameter_sha256"),
+                manifest.get("source_tree_sha256"),
+                manifest.get("environment_sha256"),
             )
-        for directory in (
-            context.cache_dir,
-            context.temp_dir,
-            context.audit_dir,
-            context.output_dir,
-            context.stages_dir,
-        ):
-            if not directory.is_dir():
-                raise ResumeMismatchError(f"Run layout is incomplete: {directory}")
-        return context
+            if observed != expected:
+                exc = ResumeMismatchError(
+                    "Run config, parameter, source signature, or environment signature "
+                    "does not match the existing run"
+                )
+                _annotate_initialization_exception(
+                    exc,
+                    context,
+                    observed_signatures={
+                        "config_sha256": observed[0],
+                        "parameter_sha256": observed[1],
+                        "source_tree_sha256": observed[2],
+                        "environment_sha256": observed[3],
+                    },
+                )
+                raise exc
+            for child_name, directory in (
+                ("cache", context.cache_dir),
+                ("temp", context.temp_dir),
+                ("audit", context.audit_dir),
+                ("output", context.output_dir),
+                ("stages", context.stages_dir),
+            ):
+                resolved_directory = directory.resolve(strict=False)
+                try:
+                    relative_directory = resolved_directory.relative_to(run_dir)
+                except ValueError:
+                    relative_directory = None
+                if (
+                    relative_directory is None
+                    or relative_directory.parts != (child_name,)
+                    or not resolved_directory.is_dir()
+                ):
+                    exc = ResumeMismatchError(
+                        "Run layout is incomplete or a child path escapes its "
+                        f"dedicated location: {directory}"
+                    )
+                    _annotate_initialization_exception(exc, context)
+                    raise exc
+            return context
+    except BaseException as exc:
+        attached = getattr(exc, "initialization_audit_context", None)
+        if not isinstance(attached, Mapping):
+            _annotate_initialization_exception(exc, context)
+        raise
 
     if resume:
         # Resuming a requested run that has not published is safe and creates it;
         # any prior .incomplete evidence remains untouched beside the run.
         pass
-    config.output_root.mkdir(parents=True, exist_ok=True)
-    staging_dir = config.output_root.resolve(strict=False) / (
-        f".{run_id}.{uuid.uuid4().hex}.initializing.partial"
+    output_root.mkdir(parents=True, exist_ok=True)
+    initialization_token = invocation_id or uuid.uuid4().hex
+    staging_dir = output_root / (
+        f".{run_id}.{initialization_token}.{uuid.uuid4().hex}.initializing.partial"
     )
     staging_context = replace(context, run_dir=staging_dir)
     try:
@@ -848,7 +1067,17 @@ def initialize_run(
             raise FileExistsError(run_dir)
         os.rename(staging_dir, run_dir)
     except BaseException as exc:
-        _preserve_failed_initialization(staging_dir, run_id=run_id, exc=exc)
+        evidence_dir = _preserve_failed_initialization(
+            staging_dir,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            exc=exc,
+        )
+        _annotate_initialization_exception(
+            exc,
+            context,
+            evidence_dir=evidence_dir,
+        )
         raise
     return context
 
@@ -1030,7 +1259,27 @@ def complete_stage(
     _write_json_new(marker_path, marker, session.context.run_dir)
     if session.target_dir.exists():
         raise FileExistsError(session.target_dir)
-    os.rename(session.partial_dir, session.target_dir)
+    published_partial = session.partial_dir
+    try:
+        os.rename(published_partial, session.target_dir)
+    except BaseException as exc:
+        committed = False
+        try:
+            committed = (
+                session.target_dir.is_dir()
+                and not published_partial.exists()
+                and (session.target_dir / STAGE_SUCCESS).is_file()
+            )
+        except BaseException:
+            committed = False
+        if committed:
+            try:
+                setattr(exc, "stage_publish_committed", True)
+                setattr(exc, "stage_execution_status", "COMPLETED")
+                setattr(exc, "published_stage_marker", marker)
+            except (AttributeError, TypeError):
+                pass
+        raise
     session.partial_dir = None
     session.marker = marker
     return marker
