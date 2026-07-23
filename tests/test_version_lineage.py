@@ -248,6 +248,78 @@ class VersionLineageTests(unittest.TestCase):
                     )
                 )
 
+    def test_failed_quality_gate_requires_execution_but_forbids_final_result(self) -> None:
+        def failed_registries() -> dict[str, vl.Registry]:
+            registries = self.minimal_registries()
+            version = next(
+                row
+                for row in registries["version_registry.csv"].rows
+                if row["canonical_id"] == "g185-current"
+            )
+            version["status"] = "exploratory"
+            version["current_truth_role"] = "failed-quality-gate-test-version"
+            failed = registries["analysis_runs.csv"].rows[0]
+            failed.update(
+                {
+                    "result_manifest": "",
+                    "public_result": "",
+                    "code_git_sha": "a" * 40,
+                    "run_started_at": "2026-07-23T00:50:12.816656Z",
+                    "run_completed_at": "",
+                    "reproducibility_status": "failed_quality_gate",
+                }
+            )
+            return registries
+
+        self.assertEqual(vl.validate_registries(failed_registries()), [])
+
+        for field in ("code_git_sha", "run_started_at"):
+            with self.subTest(missing=field):
+                registries = failed_registries()
+                registries["analysis_runs.csv"].rows[0][field] = ""
+                errors = vl.validate_registries(registries)
+                self.assertTrue(
+                    any(
+                        f"failed_quality_gate requires "
+                        f"{'valid ' if field == 'run_started_at' else ''}{field}"
+                        in error
+                        for error in errors
+                    )
+                )
+
+        invalid_values = {
+            "code_git_sha": "not-a-git-sha",
+            "run_started_at": "2026-07-23",
+        }
+        for field, value in invalid_values.items():
+            with self.subTest(invalid=field):
+                registries = failed_registries()
+                registries["analysis_runs.csv"].rows[0][field] = value
+                errors = vl.validate_registries(registries)
+                expected = (
+                    "invalid code_git_sha"
+                    if field == "code_git_sha"
+                    else "failed_quality_gate requires valid run_started_at"
+                )
+                self.assertTrue(any(expected in error for error in errors))
+
+        forbidden_values = {
+            "result_manifest": "repo://quality_reports/test-results.json",
+            "public_result": "repo://docs/results/test/report.md",
+            "run_completed_at": "2026-07-23T01:00:00Z",
+        }
+        for field, value in forbidden_values.items():
+            with self.subTest(forbidden=field):
+                registries = failed_registries()
+                registries["analysis_runs.csv"].rows[0][field] = value
+                errors = vl.validate_registries(registries)
+                self.assertTrue(
+                    any(
+                        f"failed_quality_gate must leave {field} empty" in error
+                        for error in errors
+                    )
+                )
+
     def test_climate_stress_planned_run_freezes_inputs_and_planned_edges(self) -> None:
         registries = vl.load_all()
         run = next(
@@ -276,6 +348,54 @@ class VersionLineageTests(unittest.TestCase):
             "run_completed_at",
         ):
             self.assertEqual(run[field], "")
+
+        climate_runs = [
+            row
+            for row in registries["analysis_runs.csv"].rows
+            if row["canonical_id"] == "data-climate-stress-2010-2019-v1"
+        ]
+        self.assertEqual(len(climate_runs), 2)
+        self.assertEqual(
+            sum(
+                row["reproducibility_status"] == "planned_not_run"
+                for row in climate_runs
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                row["reproducibility_status"] == "failed_quality_gate"
+                for row in climate_runs
+            ),
+            1,
+        )
+        failed = next(
+            row
+            for row in climate_runs
+            if row["reproducibility_status"] == "failed_quality_gate"
+        )
+        self.assertEqual(
+            failed["analysis_run_id"],
+            "run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001",
+        )
+        self.assertEqual(failed["input_artifact_ids"], run["input_artifact_ids"])
+        for field in (
+            "method_id",
+            "entrypoint",
+            "parameter_manifest",
+            "environment_lock",
+        ):
+            self.assertEqual(failed[field], run[field])
+        self.assertEqual(
+            failed["code_git_sha"],
+            "82cbbf80aa1a9280731cfaf24ba1fd4bd079f6aa",
+        )
+        self.assertEqual(
+            failed["run_started_at"],
+            "2026-07-23T00:50:12.816656Z",
+        )
+        for field in ("result_manifest", "public_result", "run_completed_at"):
+            self.assertEqual(failed[field], "")
 
         artifacts = {
             row["artifact_id"]: row

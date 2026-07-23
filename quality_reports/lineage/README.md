@@ -15,6 +15,8 @@
 
 逻辑版本主表仍位于 `quality_reports/version_registry.csv`。每个版本必须分别填写数据变化、方法变化和结果呈现变化；详细的人类可读展开由 `docs/VERSION_CHANGELOG.md` 自动生成。
 
+`analysis_runs.csv` 的 `planned_not_run` 表示尚未开始的计划运行，其 `result_manifest`、`public_result`、`code_git_sha`、`run_started_at`、`run_completed_at` 必须全部为空。`failed_quality_gate` 表示由已登记 Git 代码启动并留下物理运行证据，但未通过独立质量门；它要求合法的 `code_git_sha` 和带时区的 ISO `run_started_at`，同时要求 `result_manifest`、`public_result`、`run_completed_at` 为空。该状态不等于某个 pipeline stage 执行失败，也不构成可发布结果。
+
 `sample_rules.csv` 中的行数、grid 数和区域计数统一表示规则 mask 的原始支持，不是某一回归的 `e(sample)` 或 Python complete-case 数。模型因 exposure、mediator、control 或固定效应变量缺失而进一步删减的样本，应登记在运行 manifest 或结果表中，不得回写覆盖冻结的规则计数。G057 和 G049 的区域回归 complete-case 尤其小于其 raw support；B067/G195 的 42,187 行和 11,775 grids 也是 `before_dropna` 口径。
 
 ## URI 和证据规则

@@ -1416,7 +1416,7 @@ drought-only Model 8；mediator和yield两方程；baseline-local、pooled-state
 |---|---|---|---|
 | `regional-threshold-sr-v1` | 2026-07-14 | `reference` | Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate |
 | `compound-event-intensity-duration-v1` | 2026-07-15 | `reference` | Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major |
-| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Confirmed the full SPEI-2W endpoint-A build contract and complete planned input lineage without treating an unrun pilot or full panel as a completed version |
+| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Recorded one physical pilot that reached aggregate but failed the audit quality gate, while retaining a separate planned trusted replacement pilot and keeping full execution gated |
 
 ### 方法变化
 
@@ -2882,12 +2882,12 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 |---|---|
 | 时间与状态 | 2026-07-22；`exploratory`；`logical_data_version` |
 | 父版/取代关系 | parent=`data-v3-main`；supersedes=`none` |
-| 当前用途 | Confirmed full build contract only; pilot is planned_not_run and full execution awaits a successful real pilot; not a current shared data version；truth role=`candidate_data_build_planned_not_run` |
+| 当前用途 | One physical pilot reached aggregate and then failed an audit Major quality gate; it is not a release result, the trusted replacement pilot remains planned_not_run, and full execution awaits that replacement pilot；truth role=`physical_pilot_failed_quality_gate_replacement_planned` |
 | 证据 | `single-source-inferred`；关联脱敏对话 1 个 |
 
 ### 数据变化
 
-计划以V3主视图的22180个坐标格点为crosswalk，扩展至2010-2019平衡grid-year及六物候窗口；正式配置已启用SPEI-2W，V3 main/phenowindows、ERA修复、daily validation、GLEAM右边界、CHM monthly/2W与逐年物候输入均已显式登记，但pilot与full面板、NetCDF、DTA、审计层和manifest均尚未生成
+V3 main/phenowindows、ERA修复、daily validation、GLEAM、CHM monthly/2W与逐年物候八类输入已绑定到物理run；该run生成至aggregate的本地输出与审计证据，但正式event_audit接口存在一个Major，故不登记为发布结果；替代可信pilot仍未执行，full继续等待替代pilot通过
 
 关联 artifact：
 
@@ -2919,15 +2919,16 @@ ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件�
 
 ### 结果呈现变化
 
-仅登记已确认的FULL_SCOPE配置、方法、已核验输入和planned lineage；没有真实100格点pilot、full输出、结果manifest或可发布数值，不得标记current、verified或完整v1通过
+新增独立物理run登记并标记failed_quality_gate；result manifest、public result与完成时间保持空，aggregate stage完成不等于pipeline质量门通过或可发布结果；替代可信pilot继续以planned_not_run单独登记
 
 关联运行与结果载体：
 
 | Run | 输入 artifact | 样本规则 | 方法 | 入口 | 结果 manifest | 公开结果 | 可复现状态 |
 |---|---|---|---|---|---|---|---|
 | `run-data-climate-stress-panel-v1-pilot-planned-20260722` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | planned_not_run |
+| `run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | failed_quality_gate |
 
 ### 相对前版与证据边界
 
-- 综合变化：Confirmed the full SPEI-2W endpoint-A build contract and complete planned input lineage without treating an unrun pilot or full panel as a completed version
-- 证据限制：Decision_id=decision-climate-stress-confirmations-20260722 records endpoint A and the bounded input authorization; all formal YAML input families now have explicit artifact IDs; pilot and full runs have not started; no physical output or run manifest is asserted
+- 综合变化：Recorded one physical pilot that reached aggregate but failed the audit quality gate, while retaining a separate planned trusted replacement pilot and keeping full execution gated
+- 证据限制：The physical run pilot-fullscope-a-auditfix-20260723T000001 reached aggregate but failed the audit quality gate; failed_quality_gate is not a pipeline stage failure and is not publishable. The separate replacement pilot remains planned_not_run, and full execution remains blocked until that replacement passes.

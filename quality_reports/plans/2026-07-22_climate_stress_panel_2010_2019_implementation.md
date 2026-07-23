@@ -5,7 +5,7 @@
 - [x] 实现分阶段可恢复CLI、运行锁和资源门禁
 - [x] 实现`full-spei2w-dual-severity`范围内的核心算法、流式聚合和导出，并保留`PARTIAL_SCOPE`负向门禁
 - [x] 完成候选提交单元测试与“合成上游合同＋生产下游完整DAG”集成测试；当前测试结果见本计划末尾验收段
-- [ ] 完成100格点×2010/2016/2019可信pilot（`NEW_RUN_REQUIRED`；旧候选run只读失效，规范run仍为`NOT_RUN / planned_not_run`）
+- [ ] 完成100格点×2010/2016/2019可信pilot（`NEW_RUN_REQUIRED_AFTER_AGGREGATE_AUDIT_FIX`；两个候选run均只读失效，规范可信run仍为`NOT_RUN / planned_not_run`）
 - [ ] 完成全量2010—2019构建与格式导出（仅受真实pilot尚未完成的门禁阻断）
 - [ ] 归档独立事实、方法和代码终审（代码/方法审查已执行，发布终审待真实pilot）
 - [x] 更新端点决定与版本谱系；候选提交的实际index仓库政策检查已通过
@@ -30,6 +30,14 @@
 - 历史候选run `pilot-fullscope-a-20260722T202653`已留下`assets`、`grid`、`phenology`、`era_daily`和`era_baseline`阶段证据，但首次错误路径调用发生在初始化失败审计边界修复前，仅有lease acquire/release而无对应失败summary。该run不回填retrospective记录、不再`--resume`、不作为可信pilot或完整v1证据。
 - 当前唯一允许的工作是修复并复核初始化、stage控制流、锁释放和审计持久化失败合同。每次已取得lease的调用须在锁内冻结run-derived质量摘要内容，release尝试后只补充逐项锁终态；成功路径的CLI响应须明确把目标summary标为`PENDING`，响应写入/flush也纳入异常和退出码合同，最终summary再向invocation唯一路径不可覆盖发布。stage已成功而release失败时必须保持stage为`COMPLETED`、把invocation标为`FAILED/LEASE_RELEASE`，不得补造stage失败产物。修复提交获监督GO后，可信pilot必须使用新唯一run-id从`assets`重新开始；规范谱系中的pilot保持`planned_not_run`，直至新run实际启动并由其自身证据更新。
 - 新run的`assets`、后续各stage、validate和最终输出仍须逐阶段取得监督GO；旧候选run已完成的数值复核不能替代新run证据，也不能授权直接运行`spei`。
+
+## 2026-07-23 第二个候选pilot在aggregate审计接口停止
+
+- 新run `pilot-fullscope-a-auditfix-20260723T000001`使用提交`82cbbf80aa1a9280731cfaf24ba1fd4bd079f6aa`，在逐阶段监督GO下完成`assets`至`events`，并发布`aggregate`阶段产物。canonical long为100格点×3年×6窗的1800个唯一键；温度、SPEI、GLEAM、compound及hot-flash窗口字段的独立重汇未发现数值漂移，SPEI-2W字段完整，compound热超额与土壤水亏缺severity继续分列。
+- `aggregate`正式审计接口未通过：3,719条GLEAM完整事件的通用`event_family`、`source_left_censored`和`source_right_censored`为空而真实值留在自动生成的`*_x/*_y`列；4,084条GLEAM bridge的`layer`为空；通用`severity`在无逐行measure/unit的条件下同时承载ERA热浪的degree-Celsius-day、GLEAM daily P10的m3 m-3 day和GLEAM flash drought的percentile-point day。该问题不改变canonical数值，但使事件审计层不能独立解释或安全跨来源汇总，按一个发布阻断级Major处理。
+- 第十次调用的aggregate handler、`_STAGE_RESULT.json`和`_SUCCESS.json`已完成发布；调用方stdout提前关闭后，最终response写入产生`BrokenPipeError`，质量摘要准确区分`stage_execution_status=COMPLETED`与`invocation_status=FAILED`、`failure_phase=RESPONSE_WRITE`、`exit_status=2`，lease正常释放。该记录原样保留，不补写stage失败、不重跑当前aggregate。
+- 当前只允许修复`soil.py`、`aggregate.py`与`pipeline.py`的审计字段合同并补永久测试：GLEAM event/bridge显式`layer`，主事件通用字段保持非空，hot-flash冲突字段改为明确前缀，所有非空`severity`逐行携带`severity_measure`和`severity_unit`，发布前禁止`*_x/*_y`残留并执行source-specific fail-closed。不得改变severity数值、事件识别、阈值、最短期数、SPEI-2W端点或compound双独立severity。
+- 本run以及历史run `pilot-fullscope-a-20260722T202653`均只读保留，不覆盖、不删除、不再`--resume`。源码、测试、文档、谱系与Git政策门全部通过后，必须创建第三个唯一run-id，从`assets`逐阶段重做；在其`validate`和最终输出门通过前，可信pilot与full均保持未完成。
 
 ## 两级pilot与输出契约
 

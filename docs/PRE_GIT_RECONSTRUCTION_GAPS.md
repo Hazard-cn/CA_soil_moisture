@@ -51,6 +51,7 @@ title: Git 前版本重建缺口
 | run-scale-region-first-20260611 | scale-search-region-first | reconstructed_executable |
 | run-g185-draft-bootstrap-v1-20260620 | g185-draft-bootstrap-v1 | verified_superseded_interpretation |
 | run-data-climate-stress-panel-v1-pilot-planned-20260722 | data-climate-stress-2010-2019-v1 | planned_not_run |
+| run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001 | data-climate-stress-2010-2019-v1 | failed_quality_gate |
 
 ## 解释规则
 
@@ -64,4 +65,4 @@ title: Git 前版本重建缺口
 - `report-v1`：The v1 label is inferred from the later report sequence
 - `data-v2-main-pre-spei-fix`：The former local data_build/data/processed/data_v2_main.dta is missing and cannot be substituted by a later file
 - `data-v2-main-post-spei-fix`：The same historical path named data_v2_main.dta referred to a structurally different file
-- `data-climate-stress-2010-2019-v1`：Decision_id=decision-climate-stress-confirmations-20260722 records endpoint A and the bounded input authorization; all formal YAML input families now have explicit artifact IDs; pilot and full runs have not started; no physical output or run manifest is asserted
+- `data-climate-stress-2010-2019-v1`：The physical run pilot-fullscope-a-auditfix-20260723T000001 reached aggregate but failed the audit quality gate; failed_quality_gate is not a pipeline stage failure and is not publishable. The separate replacement pilot remains planned_not_run, and full execution remains blocked until that replacement passes.

@@ -402,6 +402,8 @@ def aggregate_gleam_windows(
                             "span_duration": event.span_duration,
                             "gap_duration": event.gap_duration,
                             "severity": event.severity,
+                            "severity_measure": "soil_moisture_deficit",
+                            "severity_unit": "m3 m-3 day",
                             "mean_intensity": event.mean_intensity,
                             "peak_intensity": event.peak_intensity,
                             "source_left_censored": source_left_censored,
@@ -456,6 +458,7 @@ def aggregate_gleam_windows(
                                 {
                                     "era01_cell_id": cell_id,
                                     "grid_id_v3": grid_id,
+                                    "layer": layer,
                                     "event_id": event_id,
                                     "event_family": "daily_p10",
                                     "variant": variant,
@@ -463,6 +466,8 @@ def aggregate_gleam_windows(
                                     "window": window,
                                     "source_left_censored": source_left_censored,
                                     "source_right_censored": source_right_censored,
+                                    "severity_measure": "soil_moisture_deficit",
+                                    "severity_unit": "m3 m-3 day",
                                     **payload,
                                 }
                             )
@@ -509,6 +514,8 @@ def aggregate_gleam_windows(
                             "variant": variant,
                             "event_id": event_id,
                             **event_payload,
+                            "severity_measure": "percentile_deficit",
+                            "severity_unit": "percentile-point day",
                             "start_year": int(all_pentad_years[event.start_index]),
                             "start_pentad": int(all_pentad_numbers[event.start_index]),
                             "end_year": int(all_pentad_years[event.end_index]),
@@ -596,6 +603,7 @@ def aggregate_gleam_windows(
                                 {
                                     "era01_cell_id": cell_id,
                                     "grid_id_v3": grid_id,
+                                    "layer": layer,
                                     "event_id": event_id,
                                     "event_family": "flash_drought",
                                     "variant": variant,
@@ -608,6 +616,8 @@ def aggregate_gleam_windows(
                                     "gap_duration": 0,
                                     "dry_phase_duration": dry_duration,
                                     "severity": severity,
+                                    "severity_measure": "percentile_deficit",
+                                    "severity_unit": "percentile-point day",
                                     "left_censored": left_censored,
                                     "right_censored": right_censored,
                                     "source_left_censored": source_left_censored,

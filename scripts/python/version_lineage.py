@@ -238,6 +238,7 @@ ARTIFACT_VISIBILITIES = {"local", "public"}
 ARTIFACT_GIT_POLICIES = {"never-track", "track", "track-metadata-only"}
 RUN_REPRODUCIBILITY_STATUSES = {
     "blocked_upstream_snapshot",
+    "failed_quality_gate",
     "historical_static",
     "planned_not_run",
     "reconstructed_executable",
@@ -313,6 +314,16 @@ def timestamp_date(value: str) -> date | None:
         return parsed.date()
     except (TypeError, ValueError):
         return None
+
+
+def is_iso_timestamp(value: str) -> bool:
+    """Return whether value is a timezone-qualified ISO 8601 date-time."""
+    if "T" not in value:
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except (TypeError, ValueError):
+        return False
 
 
 def timestamp_in_window(value: str, start: date, before: date) -> bool:
@@ -806,6 +817,23 @@ def validate_registries(
                     errors.append(
                         f"analysis_runs.csv:{line_number}: "
                         f"planned_not_run must leave {field} empty"
+                    )
+        elif row["reproducibility_status"] == "failed_quality_gate":
+            if not row["code_git_sha"]:
+                errors.append(
+                    f"analysis_runs.csv:{line_number}: "
+                    "failed_quality_gate requires code_git_sha"
+                )
+            if not is_iso_timestamp(row["run_started_at"]):
+                errors.append(
+                    f"analysis_runs.csv:{line_number}: "
+                    "failed_quality_gate requires valid run_started_at"
+                )
+            for field in ("result_manifest", "public_result", "run_completed_at"):
+                if row[field]:
+                    errors.append(
+                        f"analysis_runs.csv:{line_number}: "
+                        f"failed_quality_gate must leave {field} empty"
                     )
 
     thread_windows: dict[str, tuple[date, date]] = {}

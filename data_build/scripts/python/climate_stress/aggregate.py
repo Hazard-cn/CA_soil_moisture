@@ -30,6 +30,9 @@ KEY_COLUMNS = [
     "window_days",
 ]
 
+ERA_HEATWAVE_SEVERITY_MEASURE = "tmax_excess_above_calendar_p90"
+ERA_HEATWAVE_SEVERITY_UNIT = "degree-Celsius-day"
+
 
 def _python_dates(values: np.ndarray) -> list[date]:
     return [date.fromisoformat(np.datetime_as_string(value, unit="D")) for value in values]
@@ -521,6 +524,8 @@ def aggregate_temperature_windows(
                         "span_duration": event.span_duration,
                         "gap_duration": event.gap_duration,
                         "severity": event.severity,
+                        "severity_measure": ERA_HEATWAVE_SEVERITY_MEASURE,
+                        "severity_unit": ERA_HEATWAVE_SEVERITY_UNIT,
                         "mean_intensity": event.mean_intensity,
                         "peak_intensity": event.peak_intensity,
                         "source_left_censored": source_left_censored,
@@ -577,6 +582,8 @@ def aggregate_temperature_windows(
                                 "source_left_censored": source_left_censored,
                                 "source_right_censored": source_right_censored,
                                 **bridge_payload,
+                                "severity_measure": ERA_HEATWAVE_SEVERITY_MEASURE,
+                                "severity_unit": ERA_HEATWAVE_SEVERITY_UNIT,
                                 "peak_intensity": peak,
                             }
                         )

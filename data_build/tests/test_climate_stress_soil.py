@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts" / "python"
@@ -15,7 +16,8 @@ from climate_stress.gleam import DailyTargetMetrics, PentadTargetMetrics  # noqa
 from climate_stress.soil import aggregate_gleam_windows  # noqa: E402
 
 
-def test_gleam_window_states_daily_event_and_flash_drought() -> None:
+@pytest.mark.parametrize("layer", ["SMrz", "SMs"])
+def test_gleam_window_states_daily_event_and_flash_drought(layer: str) -> None:
     dates = tuple(date(2019, 1, 1) + timedelta(days=value) for value in range(365))
     values = np.full((365, 1), 0.30)
     values[9:14, 0] = 0.05
@@ -56,7 +58,7 @@ def test_gleam_window_states_daily_event_and_flash_drought() -> None:
     )
     long, events, bridges = aggregate_gleam_windows(
         panel,
-        layer="SMrz",
+        layer=layer,
         years=[2019],
         windows=["full"],
         daily_dates={2019: dates},
@@ -67,19 +69,36 @@ def test_gleam_window_states_daily_event_and_flash_drought() -> None:
         cell_block_size=1,
     )
     row = long.iloc[0]
-    assert row["gleam43a_smrz_p20_exposure_days"] == 5
-    assert row["gleam43a_smrz_p20_longest_spell_days"] == 5
-    assert row["gleam43a_smrz_min_pct"] == 15
-    assert row["gleam43a_smrz_peak_dryness20"] == 5
-    assert row["gleam43a_smrz_p20_deficit_area_pctdays"] == 25
-    assert row["gleam43a_smrz_p10_event_main_gap0_any"] == 1
-    assert row["gleam43a_smrz_p10_event_main_gap0_total_duration_days"] == 5
-    assert row["gleam43a_smrz_p10_event_main_gap0_total_severity_m3m3_days"] == 0.25
-    assert row["gleam43a_smrz_fd_main_any"] == 1
-    assert row["gleam43a_smrz_fd_main_total_duration_days"] == 15
-    assert row["gleam43a_smrz_fd_main_total_severity_pctdays"] == 175
+    prefix = f"gleam43a_{layer.lower()}"
+    assert row[f"{prefix}_p20_exposure_days"] == 5
+    assert row[f"{prefix}_p20_longest_spell_days"] == 5
+    assert row[f"{prefix}_min_pct"] == 15
+    assert row[f"{prefix}_peak_dryness20"] == 5
+    assert row[f"{prefix}_p20_deficit_area_pctdays"] == 25
+    assert row[f"{prefix}_p10_event_main_gap0_any"] == 1
+    assert row[f"{prefix}_p10_event_main_gap0_total_duration_days"] == 5
+    assert row[f"{prefix}_p10_event_main_gap0_total_severity_m3m3_days"] == 0.25
+    assert row[f"{prefix}_fd_main_any"] == 1
+    assert row[f"{prefix}_fd_main_total_duration_days"] == 15
+    assert row[f"{prefix}_fd_main_total_severity_pctdays"] == 175
     assert set(events["event_family"]) == {"daily_p10", "flash_drought"}
     assert set(bridges["event_family"]) == {"daily_p10", "flash_drought"}
+    severity_contract = {
+        "daily_p10": ("soil_moisture_deficit", "m3 m-3 day"),
+        "flash_drought": ("percentile_deficit", "percentile-point day"),
+    }
+    for audit_rows in (events, bridges):
+        assert set(audit_rows["layer"]) == {layer}
+        severity_rows = audit_rows.loc[audit_rows["severity"].notna()]
+        assert not severity_rows.empty
+        assert severity_rows[["severity_measure", "severity_unit"]].notna().all().all()
+        for event_family, (measure, unit) in severity_contract.items():
+            family_rows = severity_rows.loc[
+                severity_rows["event_family"].eq(event_family)
+            ]
+            assert not family_rows.empty
+            assert set(family_rows["severity_measure"]) == {measure}
+            assert set(family_rows["severity_unit"]) == {unit}
 
     q10_with_gaps = q10.copy()
     q10_with_gaps[:4, 0] = np.nan
@@ -92,7 +111,7 @@ def test_gleam_window_states_daily_event_and_flash_drought() -> None:
     )
     gated, gated_events, gated_bridges = aggregate_gleam_windows(
         panel,
-        layer="SMrz",
+        layer=layer,
         years=[2019],
         windows=["full"],
         daily_dates={2019: dates},
@@ -103,9 +122,9 @@ def test_gleam_window_states_daily_event_and_flash_drought() -> None:
         cell_block_size=1,
     )
     gated_row = gated.iloc[0]
-    assert gated_row["gleam43a_smrz_daily_coverage"] == 1
-    assert np.isclose(gated_row["gleam43a_smrz_p10_event_coverage"], 26 / 30)
-    assert np.isnan(gated_row["gleam43a_smrz_p10_event_main_gap0_any"])
+    assert gated_row[f"{prefix}_daily_coverage"] == 1
+    assert np.isclose(gated_row[f"{prefix}_p10_event_coverage"], 26 / 30)
+    assert np.isnan(gated_row[f"{prefix}_p10_event_main_gap0_any"])
     assert "daily_p10" in set(gated_events["event_family"])
     assert "daily_p10" not in set(gated_bridges["event_family"])
 

@@ -90,6 +90,19 @@ def test_temperature_window_and_full_event_bridge(tmp_path: Path) -> None:
     assert len(events) == 1
     assert len(bridges) == 1
     assert events.iloc[0]["event_id"] == bridges.iloc[0]["event_id"]
+    assert events.iloc[0]["severity"] == 6
+    assert bridges.iloc[0]["severity"] == 6
+    for frame in (events, bridges):
+        severity_rows = frame["severity"].notna()
+        assert frame.loc[severity_rows, "severity_measure"].notna().all()
+        assert frame.loc[severity_rows, "severity_unit"].notna().all()
+        assert (
+            frame.loc[severity_rows, "severity_measure"]
+            == "tmax_excess_above_calendar_p90"
+        ).all()
+        assert (
+            frame.loc[severity_rows, "severity_unit"] == "degree-Celsius-day"
+        ).all()
 
     tmax_threshold = np.full((366, 1), 30.0)
     tmax_threshold[:3, 0] = np.nan

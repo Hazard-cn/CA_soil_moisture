@@ -30,8 +30,11 @@ from climate_stress.pipeline import (  # noqa: E402
     _event_partition_years,
     _initialization_evidence_root,
     _initialization_exit_status,
+    _merge_gleam_event_hot_flash,
+    _merge_severity_unit_contracts,
     _read_v3_legacy_projection,
     _read_v3_validation_projection,
+    _validate_audit_frame,
     _validate_spei_2w_event_row_counts,
     build_parser,
     default_handlers,
@@ -2422,6 +2425,99 @@ def test_hot_flash_window_metrics_keep_unknown_classification_as_na() -> None:
     assert no_event["gleam43a_smrz_fd_main_hot_main_count"] == 0
 
 
+def test_gleam_hot_flash_audit_merge_is_layer_aware_and_preserves_main_fields() -> None:
+    events = pd.DataFrame(
+        {
+            "era01_cell_id": [1, 1],
+            "grid_id_v3": [101, 101],
+            "layer": ["SMrz", "SMs"],
+            "event_id": ["shared-event", "shared-event"],
+            "event_family": ["flash_drought", "flash_drought"],
+            "variant": ["main", "main"],
+            "start_index": [10, 20],
+            "end_index": [12, 22],
+            "span_pentads": [3, 3],
+            "severity": [20.0, 30.0],
+            "severity_measure": ["percentile_deficit", "percentile_deficit"],
+            "severity_unit": ["percentile-point day", "percentile-point day"],
+            "source_left_censored": [False, True],
+            "source_right_censored": [True, False],
+        }
+    )
+    classifications = pd.DataFrame(
+        {
+            "era01_cell_id": [1, 1],
+            "grid_id_v3": [101, 101],
+            "layer": ["SMs", "SMrz"],
+            "event_id": ["shared-event", "shared-event"],
+            "event_family": ["hot_flash_drought", "hot_flash_drought"],
+            "fd_variant": ["main", "main"],
+            "start_index": [200, 100],
+            "end_index": [202, 102],
+            "span_pentads": [3, 3],
+            "source_left_censored": [False, False],
+            "source_right_censored": [True, False],
+        }
+    )
+
+    merged = _merge_gleam_event_hot_flash(
+        events,
+        classifications,
+        layers=("SMrz", "SMs"),
+    ).sort_values("layer").reset_index(drop=True)
+
+    assert merged["event_family"].eq("flash_drought").all()
+    assert merged["start_index"].tolist() == [10, 20]
+    assert merged["hot_flash_start_index"].tolist() == [100, 200]
+    assert merged["source_left_censored"].tolist() == [False, True]
+    assert merged["hot_flash_source_left_censored"].tolist() == [False, False]
+    assert merged["hot_flash_event_family"].eq("hot_flash_drought").all()
+    assert not any(str(column).endswith(("_x", "_y")) for column in merged)
+
+
+def test_audit_semantics_fail_closed_for_gleam_and_severity_units() -> None:
+    bridge = pd.DataFrame(
+        {
+            "era01_cell_id": [1],
+            "grid_id_v3": [101],
+            "layer": ["SMrz"],
+            "event_id": ["event-1"],
+            "event_family": ["daily_p10"],
+            "variant": ["main_gap0"],
+            "year": [2019],
+            "window": ["full"],
+            "severity": [0.2],
+            "severity_measure": ["soil_moisture_deficit"],
+            "severity_unit": ["m3 m-3 day"],
+            "source_left_censored": [False],
+            "source_right_censored": [False],
+        }
+    )
+    assert _validate_audit_frame(
+        bridge, "gleam43a", audit_kind="bridge"
+    ) == {"soil_moisture_deficit": "m3 m-3 day"}
+
+    for column, value, match in (
+        ("layer", "root-zone", "invalid layers"),
+        ("event_family", "", "blank event_family"),
+        ("source_left_censored", pd.NA, "missing source censoring"),
+        ("severity_unit", "", "without nonempty"),
+    ):
+        invalid = bridge.copy()
+        invalid[column] = pd.Series([value], dtype="object")
+        with pytest.raises(StageValidationError, match=match):
+            _validate_audit_frame(invalid, "gleam43a", audit_kind="bridge")
+
+    ambiguous = bridge.assign(event_family_x="daily_p10")
+    with pytest.raises(StageValidationError, match="ambiguous merge fields"):
+        _validate_audit_frame(ambiguous, "gleam43a", audit_kind="bridge")
+    with pytest.raises(StageValidationError, match="multiple units"):
+        _merge_severity_unit_contracts(
+            {"soil_moisture_deficit": "m3 m-3 day"},
+            {"soil_moisture_deficit": "percentile-point day"},
+        )
+
+
 def test_gleam_partition_reader_never_requests_all_cell_columns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3352,6 +3448,92 @@ def test_cli_real_stage_chain_consumes_and_publishes_each_contract(
     assert "chm_spei_s1_mean" in long
     assert "gleam43a_smrz_p20_exposure_days" in long
     assert "compound_smrz_hot_p10_main_gap0_count" in long
+    aggregate_stage = run_dir / "stages" / "aggregate"
+    event_audit = pd.read_parquet(aggregate_stage / "event_audit.parquet")
+    bridge_audit = pd.read_parquet(
+        aggregate_stage / "event_window_bridge.parquet"
+    )
+    for audit in (event_audit, bridge_audit):
+        assert not any(
+            str(column).endswith(("_x", "_y")) for column in audit.columns
+        )
+        severity_rows = audit["severity"].notna()
+        assert audit.loc[
+            severity_rows, ["severity_measure", "severity_unit"]
+        ].notna().all().all()
+        assert (
+            audit.loc[severity_rows]
+            .groupby("severity_measure", observed=True)["severity_unit"]
+            .nunique()
+            .le(1)
+            .all()
+        )
+    gleam_events = event_audit.loc[event_audit["source_family"].eq("gleam43a")]
+    gleam_bridges = bridge_audit.loc[
+        bridge_audit["source_family"].eq("gleam43a")
+    ]
+    assert not gleam_events.empty and not gleam_bridges.empty
+    assert gleam_events[
+        [
+            "event_family",
+            "layer",
+            "source_left_censored",
+            "source_right_censored",
+        ]
+    ].notna().all().all()
+    assert gleam_bridges["layer"].notna().all()
+    assert set(gleam_events["layer"]).issubset({"SMrz", "SMs"})
+    assert set(gleam_bridges["layer"]).issubset({"SMrz", "SMs"})
+    flash_events = gleam_events.loc[
+        gleam_events["event_family"].eq("flash_drought")
+    ]
+    assert not flash_events.empty
+    assert flash_events["hot_flash_event_family"].eq(
+        "hot_flash_drought"
+    ).all()
+    assert flash_events[
+        [
+            "hot_flash_source_left_censored",
+            "hot_flash_source_right_censored",
+        ]
+    ].notna().all().all()
+    audit_event_ids = set(
+        zip(event_audit["source_family"], event_audit["event_id"], strict=True)
+    )
+    assert all(
+        identity in audit_event_ids
+        for identity in zip(
+            bridge_audit["source_family"],
+            bridge_audit["event_id"],
+            strict=True,
+        )
+    )
+    assert not event_audit.duplicated(["source_family", "event_id"]).any()
+    assert not bridge_audit.duplicated(
+        ["source_family", "event_id", "year", "window"]
+    ).any()
+    event_partition_names = {
+        part
+        for path in (aggregate_stage / "event_audit.parquet").rglob("*.parquet")
+        for part in path.relative_to(aggregate_stage / "event_audit.parquet").parts
+        if part.startswith("family-")
+    }
+    assert "family-gleam43a-event" not in event_partition_names
+    assert {
+        "family-gleam43a-daily_p10",
+        "family-gleam43a-flash_drought",
+    }.issubset(event_partition_names)
+    compound_source = pd.read_parquet(
+        run_dir / "stages" / "events" / "compound_window_long.parquet"
+    )
+    compound_columns = [
+        column for column in compound_source if column.startswith("compound_")
+    ]
+    pd.testing.assert_frame_equal(
+        long[["era01_cell_id", "year", "window", *compound_columns]],
+        compound_source[["era01_cell_id", "year", "window", *compound_columns]],
+        check_dtype=False,
+    )
     validation = json.loads(
         (run_dir / "stages" / "validate" / "validation_report.json").read_text(
             encoding="utf-8"

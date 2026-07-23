@@ -3255,6 +3255,298 @@ def _tag_audit(frame: pd.DataFrame, source_family: str) -> pd.DataFrame:
     return output
 
 
+def _audit_nonempty_text(values: pd.Series) -> pd.Series:
+    text = values.astype("string").str.strip()
+    return text.notna() & text.ne("")
+
+
+def _merge_severity_unit_contracts(
+    *contracts: Mapping[str, str],
+) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for contract in contracts:
+        for raw_measure, raw_unit in contract.items():
+            measure = str(raw_measure)
+            unit = str(raw_unit)
+            previous = merged.get(measure)
+            if previous is not None and previous != unit:
+                raise StageValidationError(
+                    "Audit severity measure maps to multiple units: "
+                    f"{measure!r} -> {previous!r}, {unit!r}"
+                )
+            merged[measure] = unit
+    return merged
+
+
+def _validate_audit_frame(
+    frame: pd.DataFrame,
+    source_family: str,
+    *,
+    audit_kind: str,
+) -> dict[str, str]:
+    """Fail closed on semantic audit fields before heterogeneous Arrow alignment."""
+
+    if audit_kind not in {"event", "bridge"}:
+        raise ValueError(f"Unsupported audit kind: {audit_kind}")
+    if frame.empty:
+        return {}
+
+    merge_suffix_columns = sorted(
+        str(column)
+        for column in frame.columns
+        if str(column).endswith(("_x", "_y"))
+    )
+    if merge_suffix_columns:
+        raise StageValidationError(
+            f"{source_family} {audit_kind} audit retains ambiguous merge fields: "
+            f"{merge_suffix_columns}"
+        )
+
+    severity_contract: dict[str, str] = {}
+    if "severity" in frame:
+        severity_rows = frame["severity"].notna()
+        if severity_rows.any():
+            required = {"severity_measure", "severity_unit"}
+            missing = sorted(required.difference(frame.columns))
+            if missing:
+                raise StageValidationError(
+                    f"{source_family} {audit_kind} severity lacks metadata fields: "
+                    f"{missing}"
+                )
+            measures = frame.loc[severity_rows, "severity_measure"]
+            units = frame.loc[severity_rows, "severity_unit"]
+            valid_metadata = _audit_nonempty_text(measures) & _audit_nonempty_text(units)
+            if not valid_metadata.all():
+                raise StageValidationError(
+                    f"{source_family} {audit_kind} has severity rows without "
+                    "nonempty severity_measure/severity_unit"
+                )
+            pairs = pd.DataFrame(
+                {
+                    "measure": measures.astype("string").str.strip(),
+                    "unit": units.astype("string").str.strip(),
+                }
+            ).drop_duplicates()
+            for measure, group in pairs.groupby("measure", sort=True, observed=True):
+                observed_units = sorted(set(group["unit"].astype(str)))
+                if len(observed_units) != 1:
+                    raise StageValidationError(
+                        "Audit severity measure maps to multiple units within "
+                        f"{source_family} {audit_kind}: {measure!r} -> {observed_units}"
+                    )
+                severity_contract[str(measure)] = observed_units[0]
+
+    if source_family != "gleam43a":
+        return severity_contract
+
+    required = {
+        "era01_cell_id",
+        "grid_id_v3",
+        "layer",
+        "event_id",
+        "event_family",
+        "variant",
+        "source_left_censored",
+        "source_right_censored",
+    }
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise StageValidationError(
+            f"GLEAM {audit_kind} audit lacks required semantic fields: {missing}"
+        )
+    for column in ("layer", "event_id", "event_family"):
+        if not _audit_nonempty_text(frame[column]).all():
+            raise StageValidationError(
+                f"GLEAM {audit_kind} audit contains blank {column}"
+            )
+    layers = set(frame["layer"].astype(str))
+    if not layers.issubset({"SMrz", "SMs"}):
+        raise StageValidationError(
+            f"GLEAM {audit_kind} audit contains invalid layers: {sorted(layers)}"
+        )
+    if frame[["source_left_censored", "source_right_censored"]].isna().any().any():
+        raise StageValidationError(
+            f"GLEAM {audit_kind} audit contains missing source censoring"
+        )
+    event_families = set(frame["event_family"].astype(str))
+    if not event_families.issubset({"daily_p10", "flash_drought"}):
+        raise StageValidationError(
+            f"GLEAM {audit_kind} audit contains invalid event families: "
+            f"{sorted(event_families)}"
+        )
+
+    if audit_kind == "event":
+        if frame.duplicated(["layer", "event_id"]).any():
+            raise StageValidationError("GLEAM complete-event audit duplicates event identity")
+        daily = frame["event_family"].eq("daily_p10")
+        flash = frame["event_family"].eq("flash_drought")
+        family_support = (
+            (
+                daily,
+                (
+                    "start_date",
+                    "end_date",
+                    "duration",
+                    "active_duration",
+                    "span_duration",
+                    "gap_duration",
+                ),
+            ),
+            (
+                flash,
+                ("start_index", "end_index", "span_pentads"),
+            ),
+        )
+        for mask, columns in family_support:
+            missing_support = sorted(set(columns).difference(frame.columns))
+            if mask.any() and missing_support:
+                raise StageValidationError(
+                    "GLEAM complete-event audit lacks family support fields: "
+                    f"{missing_support}"
+                )
+            if mask.any() and frame.loc[mask, list(columns)].isna().any().any():
+                raise StageValidationError(
+                    "GLEAM complete-event audit contains missing family support values"
+                )
+        hot_flash_required = {
+            "hot_flash_event_family",
+            "hot_flash_source_left_censored",
+            "hot_flash_source_right_censored",
+            "fd_variant",
+        }
+        missing_hot_flash = sorted(hot_flash_required.difference(frame.columns))
+        if flash.any() and missing_hot_flash:
+            raise StageValidationError(
+                "GLEAM flash-drought audit lacks hot-flash classification fields: "
+                f"{missing_hot_flash}"
+            )
+        if flash.any():
+            flash_classification = frame.loc[flash]
+            if not flash_classification["hot_flash_event_family"].eq(
+                "hot_flash_drought"
+            ).all():
+                raise StageValidationError(
+                    "GLEAM flash-drought audit has an unmatched hot-flash classification"
+                )
+            if flash_classification[
+                [
+                    "hot_flash_source_left_censored",
+                    "hot_flash_source_right_censored",
+                    "fd_variant",
+                ]
+            ].isna().any().any():
+                raise StageValidationError(
+                    "GLEAM flash-drought audit has incomplete hot-flash classification"
+                )
+            if not flash_classification["fd_variant"].astype(str).eq(
+                flash_classification["variant"].astype(str)
+            ).all():
+                raise StageValidationError(
+                    "GLEAM flash-drought variant differs from hot-flash classification"
+                )
+    else:
+        bridge_keys = ["layer", "event_id", "year", "window"]
+        if frame.duplicated(bridge_keys).any():
+            raise StageValidationError("GLEAM event-window audit duplicates bridge identity")
+
+    return severity_contract
+
+
+def _merge_gleam_event_hot_flash(
+    events: pd.DataFrame,
+    classifications: pd.DataFrame,
+    *,
+    layers: Iterable[str],
+) -> pd.DataFrame:
+    """Attach hot-flash attributes without overwriting primary GLEAM event semantics."""
+
+    output = events.copy()
+    expected_layers = {str(layer) for layer in layers}
+    if not expected_layers or not expected_layers.issubset({"SMrz", "SMs"}):
+        raise StageValidationError(
+            f"Configured GLEAM layers are invalid: {sorted(expected_layers)}"
+        )
+    if output.empty:
+        if not classifications.empty:
+            raise StageValidationError(
+                "Hot-flash classifications exist without GLEAM complete events"
+            )
+        return output
+
+    keys = ["era01_cell_id", "grid_id_v3", "layer", "event_id"]
+    event_required = {*keys, "event_family"}
+    missing_events = sorted(event_required.difference(output.columns))
+    if missing_events:
+        raise StageValidationError(
+            f"GLEAM complete events lack hot-flash merge fields: {missing_events}"
+        )
+    observed_event_layers = set(output["layer"].dropna().astype(str))
+    if not observed_event_layers.issubset(expected_layers):
+        raise StageValidationError(
+            "GLEAM complete-event layers differ from configured layers: "
+            f"{sorted(observed_event_layers)}"
+        )
+    if output.duplicated(keys).any():
+        raise StageValidationError("GLEAM complete events duplicate hot-flash merge keys")
+
+    flash_events = output.loc[output["event_family"].eq("flash_drought"), keys]
+    if classifications.empty:
+        if not flash_events.empty:
+            raise StageValidationError(
+                "GLEAM flash-drought events lack hot-flash classifications"
+            )
+        return output
+
+    missing_classifications = sorted(set(keys).difference(classifications.columns))
+    if missing_classifications:
+        raise StageValidationError(
+            "Hot-flash classifications lack layer-aware merge fields: "
+            f"{missing_classifications}"
+        )
+    classification_layers = set(classifications["layer"].dropna().astype(str))
+    if not classification_layers.issubset(expected_layers):
+        raise StageValidationError(
+            "Hot-flash classification layers differ from configured layers: "
+            f"{sorted(classification_layers)}"
+        )
+    if classifications.duplicated(keys).any():
+        raise StageValidationError("Hot-flash classifications duplicate layer-aware keys")
+
+    key_contract = flash_events.merge(
+        classifications[keys],
+        on=keys,
+        how="outer",
+        validate="one_to_one",
+        indicator=True,
+    )
+    if not key_contract["_merge"].eq("both").all():
+        counts = key_contract["_merge"].value_counts().to_dict()
+        raise StageValidationError(
+            "GLEAM flash-drought events and hot-flash classifications do not have "
+            f"one-to-one layer-aware support: {counts}"
+        )
+
+    conflicts = sorted((set(output.columns) & set(classifications.columns)) - set(keys))
+    rename = {column: f"hot_flash_{column}" for column in conflicts}
+    attached = classifications.rename(columns=rename)
+    output = output.merge(
+        attached,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+        sort=False,
+        indicator="__hot_flash_alignment",
+    )
+    flash_rows = output["event_family"].eq("flash_drought")
+    if not output.loc[flash_rows, "__hot_flash_alignment"].eq("both").all():
+        raise StageValidationError(
+            "GLEAM flash-drought event lacks a layer-aware hot-flash classification"
+        )
+    output = output.drop(columns="__hot_flash_alignment")
+    _validate_audit_frame(output, "gleam43a", audit_kind="event")
+    return output
+
+
 def _iter_audit_frames(payload: pd.DataFrame | Path) -> Iterable[pd.DataFrame]:
     """Yield bounded audit frames from an in-memory source or dataset path."""
 
@@ -3329,7 +3621,7 @@ def _write_partitioned_audit_dataset(
     cell_block_size: int,
     schema_name: str,
     audit_kind: str,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Write heterogeneous audit sources with one unified Arrow schema.
 
     Sources are scanned and written one bounded frame at a time.  No global
@@ -3339,8 +3631,17 @@ def _write_partitioned_audit_dataset(
     import pyarrow as pa
 
     schemas: list[Any] = []
+    severity_units: dict[str, str] = {}
     for source_family, payload in sources:
         for frame in _iter_audit_frames(payload):
+            severity_units = _merge_severity_unit_contracts(
+                severity_units,
+                _validate_audit_frame(
+                    frame,
+                    source_family,
+                    audit_kind=audit_kind,
+                ),
+            )
             schemas.append(_tag_audit_arrow(frame, source_family).schema)
     root.mkdir(parents=True, exist_ok=True)
     if not schemas:
@@ -3356,9 +3657,10 @@ def _write_partitioned_audit_dataset(
                 "rows": 0,
                 "partitions": 1,
                 "partition_order": ["family", "year", "cell_block"],
+                "severity_measure_units": {},
             },
         )
-        return {"rows": 0, "partitions": 1}
+        return {"rows": 0, "partitions": 1, "severity_measure_units": {}}
     try:
         unified_schema = pa.unify_schemas(
             schemas, promote_options="permissive"
@@ -3383,6 +3685,11 @@ def _write_partitioned_audit_dataset(
     for source_index, (source_family, payload) in enumerate(sources):
         frame_index = 0
         for frame in _iter_audit_frames(payload):
+            _validate_audit_frame(
+                frame,
+                source_family,
+                audit_kind=audit_kind,
+            )
             if "era01_cell_id" not in frame:
                 raise StageValidationError(
                     f"Audit source {source_family} lacks era01_cell_id"
@@ -3425,9 +3732,14 @@ def _write_partitioned_audit_dataset(
             "partitions": partitions,
             "partition_order": ["family", "year", "cell_block"],
             "schema": str(unified_schema),
+            "severity_measure_units": severity_units,
         },
     )
-    return {"rows": rows, "partitions": partitions}
+    return {
+        "rows": rows,
+        "partitions": partitions,
+        "severity_measure_units": severity_units,
+    }
 
 
 def _parquet_dataset_row_count(path: Path) -> int:
@@ -4137,13 +4449,11 @@ def _handle_aggregate(request: StageRequest) -> StageOutcome:
             if soil_events
             else pd.DataFrame()
         )
-        if not gleam_event_frame.empty and not hot_flash.empty:
-            gleam_event_frame = gleam_event_frame.merge(
-                hot_flash.drop(columns=["layer"], errors="ignore"),
-                on=["era01_cell_id", "grid_id_v3", "event_id"],
-                how="left",
-                validate="one_to_one",
-            )
+        gleam_event_frame = _merge_gleam_event_hot_flash(
+            gleam_event_frame,
+            hot_flash,
+            layers=layers,
+        )
         compound_events = _read_parquet_cell_block(
             compound_sources["events"], cell_ids
         )
@@ -4162,6 +4472,20 @@ def _handle_aggregate(request: StageRequest) -> StageOutcome:
             "gleam43a": all_soil_bridges,
             "compound": compound_bridges,
         }
+        block_severity_units: dict[str, str] = {}
+        for audit_kind, audit_frames in (
+            ("event", event_frames),
+            ("bridge", bridge_frames),
+        ):
+            for source_family, frame in audit_frames.items():
+                block_severity_units = _merge_severity_unit_contracts(
+                    block_severity_units,
+                    _validate_audit_frame(
+                        frame,
+                        source_family,
+                        audit_kind=audit_kind,
+                    ),
+                )
 
         frames = {
             "canonical": combined,
@@ -4266,6 +4590,10 @@ def _handle_aggregate(request: StageRequest) -> StageOutcome:
         raise StageValidationError("Event audit partition count changed on publication")
     if bridge_report["rows"] != totals["event_bridge_rows"]:
         raise StageValidationError("Event bridge partition count changed on publication")
+    published_severity_units = _merge_severity_unit_contracts(
+        event_report["severity_measure_units"],
+        bridge_report["severity_measure_units"],
+    )
 
     aggregate_contract_path = request.work_dir / "aggregate_partition_manifest.json"
     if aggregate_contract_path.exists():
@@ -4302,6 +4630,7 @@ def _handle_aggregate(request: StageRequest) -> StageOutcome:
                     "sha256": sha256_path(bridge_path),
                 },
             },
+            "severity_measure_units": published_severity_units,
             "peak_memory_contract": {
                 "spatial_cells_per_block_max": cell_block_size,
                 "long_rows_per_block_max": cell_block_size * expected_rows_per_cell,
