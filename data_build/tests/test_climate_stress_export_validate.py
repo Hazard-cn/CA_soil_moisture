@@ -16,6 +16,7 @@ from climate_stress.export import (  # noqa: E402
     CANONICAL_WINDOWS,
     LONG_KEY_COLUMNS,
     WIDE_KEY_COLUMNS,
+    _infer_units,
     build_manifest,
     build_material_passport,
     build_stata_alias_map,
@@ -55,6 +56,17 @@ PARTIAL_SCOPE_ID = "non2w-dual-severity"
 PARTIAL_SCOPE_STATUS = "PARTIAL_SCOPE"
 FULL_SCOPE_ID = "full-spei2w-dual-severity"
 FULL_SCOPE_STATUS = "FULL_SCOPE"
+
+
+def _run_identity() -> dict[str, str]:
+    return {
+        "run_id": "test-run-001",
+        "code_git_commit": "a" * 40,
+        "run_signature_sha256": "b" * 64,
+        "source_tree_sha256": "c" * 64,
+        "effective_config_sha256": "d" * 64,
+        "environment_sha256": "e" * 64,
+    }
 
 
 def _partial_2w_evidence() -> dict[str, object]:
@@ -351,6 +363,7 @@ def test_dictionary_passport_and_manifest_hashes(tmp_path: Path) -> None:
     passport = build_material_passport(
         long,
         version_id="test-version",
+        run_identity=_run_identity(),
         sources={"era5": "synthetic"},
         scope_id=PARTIAL_SCOPE_ID,
         scope_status=PARTIAL_SCOPE_STATUS,
@@ -364,6 +377,7 @@ def test_dictionary_passport_and_manifest_hashes(tmp_path: Path) -> None:
     input_path.write_text("input\n", encoding="utf-8")
     manifest = build_manifest(
         version_id="test-version",
+        run_identity=_run_identity(),
         config_path=config_path,
         inputs={"input": input_path},
         outputs={"passport": passport_path},
@@ -523,6 +537,7 @@ def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> N
     (audit_directory / "part-02.bin").write_bytes(b"two")
     manifest = build_manifest(
         version_id="test-version",
+        run_identity=_run_identity(),
         config_path=config_path,
         inputs=None,
         input_records=input_records,
@@ -541,6 +556,102 @@ def test_complete_metadata_and_manifest_inventory_audit_api(tmp_path: Path) -> N
     assert manifest["audit_artifacts"]["era_daily_cache"]["file_count"] == 2
     assert manifest["audit_artifacts"]["era_daily_cache"]["bytes"] == 6
     assert ".partial" not in str(manifest)
+
+
+def test_era_coverage_units_are_dimensionless_in_all_metadata_outputs(
+    tmp_path: Path,
+) -> None:
+    coverage_fields = (
+        "era5u8_tmax_coverage",
+        "era5u8_tmin_coverage",
+        "era5u8_tmax_p90_coverage",
+        "era5u8_tmin_p90_coverage",
+    )
+    assert {_infer_units(field) for field in coverage_fields} == {"1"}
+
+    long = _long_panel().loc[lambda frame: frame["year"] == 2010].copy()
+    for field in coverage_fields:
+        long[field] = 1.0
+    metadata = generate_variable_metadata(
+        long.columns,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
+    )
+    dictionary = build_variable_dictionary(
+        long,
+        variable_metadata=metadata,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
+    )
+    csv_path, markdown_path = write_variable_dictionary(
+        dictionary,
+        tmp_path / "coverage_dictionary.csv",
+        tmp_path / "coverage_dictionary.md",
+    )
+    netcdf_path = write_cf_netcdf(
+        long,
+        tmp_path / "coverage.nc",
+        years=(2010,),
+        windows=CANONICAL_WINDOWS,
+        expected_rows=12,
+        variable_metadata=metadata,
+        scope_id=PARTIAL_SCOPE_ID,
+        scope_status=PARTIAL_SCOPE_STATUS,
+    )
+
+    csv_dictionary = pd.read_csv(csv_path, encoding="utf-8-sig").set_index(
+        "variable"
+    )
+    assert set(csv_dictionary.loc[list(coverage_fields), "unit"]) == {"1"}
+    markdown = markdown_path.read_text(encoding="utf-8")
+    for field in coverage_fields:
+        assert f"| {field} | float64 | climate_measure | 1 |" in markdown
+    with nc.Dataset(netcdf_path) as dataset:
+        for field in coverage_fields:
+            assert dataset.variables[field].units == "1"
+
+
+def test_export_entrypoints_reject_missing_or_empty_run_identity_before_writes(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "identity.yaml"
+    raw = tmp_path / "identity.raw"
+    config.write_text("version_id: test\n", encoding="utf-8")
+    raw.write_text("synthetic\n", encoding="utf-8")
+    missing = _run_identity()
+    missing.pop("source_tree_sha256")
+    with pytest.raises(ValueError, match="lacks required fields"):
+        export_panel_bundle(
+            _long_panel(),
+            tmp_path / "missing-identity",
+            config_path=config,
+            run_identity=missing,
+            inputs={"synthetic": raw},
+            years=YEARS,
+            windows=CANONICAL_WINDOWS,
+            expected_long_rows=120,
+            expected_wide_rows=20,
+            scope_id=PARTIAL_SCOPE_ID,
+            scope_status=PARTIAL_SCOPE_STATUS,
+            spei_2w_numeric_executed=False,
+            spei_2w_output_included=False,
+            spei_2w_evidence=_partial_2w_evidence(),
+        )
+    assert not (tmp_path / "missing-identity").exists()
+
+    partitions = _partition_long_by_cells(
+        _long_panel(), tmp_path / "empty-identity-parts", 1
+    )
+    empty = _run_identity()
+    empty["effective_config_sha256"] = " "
+    with pytest.raises(ValueError, match="empty required fields"):
+        _streaming_bundle(
+            tmp_path,
+            partitions,
+            "empty-identity",
+            run_identity=empty,
+        )
+    assert not (tmp_path / "empty-identity").exists()
 
 
 def test_full_chunked_bundle_validation_uses_aggregate_source(tmp_path: Path) -> None:
@@ -654,6 +765,7 @@ def _streaming_bundle(
     scope_id: str = PARTIAL_SCOPE_ID,
     scope_status: str = PARTIAL_SCOPE_STATUS,
     spei_2w_evidence: dict[str, object] | None = None,
+    run_identity: dict[str, str] | None = None,
 ) -> tuple[object, dict[str, object]]:
     config = tmp_path / f"{output_name}.yaml"
     raw = tmp_path / f"{output_name}.raw"
@@ -664,6 +776,9 @@ def _streaming_bundle(
         _crosswalk(),
         tmp_path / output_name,
         config_path=config,
+        run_identity=(
+            run_identity if run_identity is not None else _run_identity()
+        ),
         inputs={"synthetic": raw},
         years=YEARS,
         windows=CANONICAL_WINDOWS,
@@ -715,6 +830,16 @@ def test_streaming_bundle_is_block_bounded_and_value_equivalent(
         for column in pd.read_parquet(paths.long_parquet).columns
     )
     assert output_contract["compound_severity"]["mixed_unit_scalar_included"] is False
+    manifest = __import__("json").loads(paths.manifest.read_text(encoding="utf-8"))
+    passport = __import__("json").loads(
+        paths.material_passport.read_text(encoding="utf-8")
+    )
+    assert (
+        manifest["run_identity"]
+        == passport["run_identity"]
+        == output_contract["run_identity"]
+        == _run_identity()
+    )
     assert max(
         rows
         for path, columns, rows in reads
@@ -926,6 +1051,7 @@ def test_nonstreaming_export_rejects_partial_leak_and_full_field_drift(
             long,
             tmp_path / "partial-leak",
             config_path=config,
+            run_identity=_run_identity(),
             inputs={"synthetic": raw},
             years=YEARS,
             windows=CANONICAL_WINDOWS,
@@ -942,6 +1068,7 @@ def test_nonstreaming_export_rejects_partial_leak_and_full_field_drift(
         long,
         tmp_path / "full-match",
         config_path=config,
+        run_identity=_run_identity(),
         inputs={"synthetic": raw},
         years=YEARS,
         windows=CANONICAL_WINDOWS,
@@ -955,12 +1082,26 @@ def test_nonstreaming_export_rejects_partial_leak_and_full_field_drift(
     )
     assert paths.long_parquet.is_file()
     assert "chm_spei_2w_k10_main_count" in exported_long
+    manifest = __import__("json").loads(paths.manifest.read_text(encoding="utf-8"))
+    passport = __import__("json").loads(
+        paths.material_passport.read_text(encoding="utf-8")
+    )
+    output_contract = __import__("json").loads(
+        paths.output_contract.read_text(encoding="utf-8")
+    )
+    assert (
+        manifest["run_identity"]
+        == passport["run_identity"]
+        == output_contract["run_identity"]
+        == _run_identity()
+    )
 
     with pytest.raises(ValueError, match="field count differs"):
         export_panel_bundle(
             long,
             tmp_path / "full-mismatch",
             config_path=config,
+            run_identity=_run_identity(),
             inputs={"synthetic": raw},
             years=YEARS,
             windows=CANONICAL_WINDOWS,

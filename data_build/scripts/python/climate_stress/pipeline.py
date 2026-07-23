@@ -957,6 +957,144 @@ def _stage_file(context: RunContext, stage: str, *parts: str) -> Path:
     return ensure_within_run(path, context.run_dir)
 
 
+def _run_identity_from_context(context: RunContext) -> dict[str, str]:
+    """Load the immutable run identity and cross-check it against RunContext."""
+
+    from .export import RUN_IDENTITY_FIELDS
+
+    manifest_path = context.manifest_path
+    if not manifest_path.is_file():
+        raise StageValidationError(f"Run manifest is missing: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise StageValidationError(
+            f"Run manifest is not a readable JSON object: {manifest_path}"
+        ) from exc
+    if not isinstance(manifest, Mapping):
+        raise StageValidationError("Run manifest must be a JSON object")
+
+    missing = [name for name in RUN_IDENTITY_FIELDS if name not in manifest]
+    if missing:
+        raise StageValidationError(
+            f"Run manifest lacks required identity fields: {missing}"
+        )
+    invalid = [
+        name
+        for name in RUN_IDENTITY_FIELDS
+        if not isinstance(manifest[name], str) or not manifest[name].strip()
+    ]
+    if invalid:
+        raise StageValidationError(
+            f"Run manifest has empty or non-string identity fields: {invalid}"
+        )
+
+    expected = {
+        "run_id": context.run_id,
+        "code_git_commit": context.code_git_commit,
+        "run_signature_sha256": parameter_signature(
+            {
+                "parameters": context.parameters,
+                "source_tree_sha256": context.source_tree_sha256,
+                "environment_sha256": context.environment_sha256,
+            }
+        ),
+        "source_tree_sha256": context.source_tree_sha256,
+        "effective_config_sha256": context.config.sha256,
+        "environment_sha256": context.environment_sha256,
+    }
+    invalid_expected = [
+        name
+        for name in RUN_IDENTITY_FIELDS
+        if not isinstance(expected.get(name), str)
+        or not str(expected[name]).strip()
+    ]
+    if invalid_expected:
+        raise StageValidationError(
+            f"RunContext has empty identity fields: {invalid_expected}"
+        )
+    mismatched = [
+        name
+        for name in RUN_IDENTITY_FIELDS
+        if manifest[name] != expected[name]
+    ]
+    if mismatched:
+        raise StageValidationError(
+            "Run manifest identity differs from the active RunContext: "
+            f"{mismatched}"
+        )
+    return {name: str(manifest[name]) for name in RUN_IDENTITY_FIELDS}
+
+
+def _validate_export_run_identity(
+    context: RunContext,
+    *,
+    manifest: Mapping[str, Any],
+    material_passport: Mapping[str, Any],
+    output_contract: Mapping[str, Any],
+) -> dict[str, str]:
+    """Require identical bundle identity objects that match the current run."""
+
+    from .export import RUN_IDENTITY_FIELDS
+
+    expected = _run_identity_from_context(context)
+    failures: list[str] = []
+    for document_name, document in (
+        ("manifest.json", manifest),
+        ("material_passport.json", material_passport),
+        ("output_contract.json", output_contract),
+    ):
+        if not isinstance(document, Mapping):
+            failures.append(f"{document_name} is not a JSON object")
+            continue
+        identity = document.get("run_identity")
+        if not isinstance(identity, Mapping):
+            failures.append(f"{document_name} lacks run_identity")
+            continue
+        missing = [name for name in RUN_IDENTITY_FIELDS if name not in identity]
+        extra = sorted(set(identity) - set(RUN_IDENTITY_FIELDS))
+        invalid = [
+            name
+            for name in RUN_IDENTITY_FIELDS
+            if name in identity
+            and (
+                not isinstance(identity[name], str)
+                or not identity[name].strip()
+            )
+        ]
+        mismatched = [
+            name
+            for name in RUN_IDENTITY_FIELDS
+            if name in identity
+            and isinstance(identity[name], str)
+            and identity[name].strip()
+            and identity[name] != expected[name]
+        ]
+        if missing:
+            failures.append(
+                f"{document_name} run_identity lacks fields: {missing}"
+            )
+        if extra:
+            failures.append(
+                f"{document_name} run_identity has unexpected fields: {extra}"
+            )
+        if invalid:
+            failures.append(
+                f"{document_name} run_identity has empty fields: {invalid}"
+            )
+        if mismatched:
+            failures.append(
+                f"{document_name} run_identity differs from current run: "
+                f"{mismatched}"
+            )
+    if failures:
+        raise StageValidationError(
+            "Export bundle run identity validation failed: "
+            + "; ".join(failures)
+        )
+    return expected
+
+
 def _select_crosswalk(crosswalk: pd.DataFrame, scope: ExecutionScope) -> pd.DataFrame:
     ordered = crosswalk.sort_values("era01_cell_id").reset_index(drop=True)
     if not scope.is_pilot:
@@ -4675,6 +4813,7 @@ def _handle_export(request: StageRequest) -> StageOutcome:
         manifest_input_records_from_inventory,
     )
 
+    run_identity = _run_identity_from_context(request.context)
     crosswalk = pd.read_parquet(
         _stage_file(request.context, "grid", "crosswalk.parquet")
     ).sort_values("era01_cell_id").reset_index(drop=True)
@@ -4942,6 +5081,7 @@ def _handle_export(request: StageRequest) -> StageOutcome:
         spei_2w_numeric_executed=spei_2w_numeric_executed,
         spei_2w_output_included=spei_2w_output_included,
         spei_2w_evidence=spei_2w_audit,
+        run_identity=run_identity,
     )
     artifacts = {
         name: getattr(paths, name) for name in paths.__dataclass_fields__
@@ -5469,6 +5609,27 @@ def _handle_validate(request: StageRequest) -> StageOutcome:
         )
         expected_wide = selected_cells * len(request.scope.years)
         tolerance = float(request.config.data["quality"]["numeric_tolerance"])
+        manifest_path = bundle / "manifest.json"
+        bundle_manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        )
+        output_contract = json.loads(
+            (bundle / "output_contract.json").read_text(encoding="utf-8")
+        )
+        passport = json.loads(
+            (bundle / "material_passport.json").read_text(encoding="utf-8")
+        )
+        run_identity = _validate_export_run_identity(
+            request.context,
+            manifest=bundle_manifest,
+            material_passport=passport,
+            output_contract=output_contract,
+        )
+        gates["run_identity"] = {
+            "status": "PASS",
+            "fields": list(run_identity),
+            "run_id": run_identity["run_id"],
+        }
         gates["full_export_roundtrip"] = validate_export_bundle_full(
             _stage_file(
                 request.context, "aggregate", "climate_window_long.parquet"
@@ -5516,8 +5677,6 @@ def _handle_validate(request: StageRequest) -> StageOutcome:
             "years": len(request.scope.years),
             "validation_mode": "partitioned_full_value_comparison",
         }
-        manifest_path = bundle / "manifest.json"
-        bundle_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         published_outputs = bundle_manifest.get("outputs", {})
         published_audits = bundle_manifest.get("audit_artifacts", {})
         manifest_link_failures: list[str] = []
@@ -5575,12 +5734,6 @@ def _handle_validate(request: StageRequest) -> StageOutcome:
             (
                 request.context.stages_dir / "spei" / "_SUCCESS.json"
             ).read_text(encoding="utf-8")
-        )
-        output_contract = json.loads(
-            (bundle / "output_contract.json").read_text(encoding="utf-8")
-        )
-        passport = json.loads(
-            (bundle / "material_passport.json").read_text(encoding="utf-8")
         )
         output_2w = output_contract.get("spei_2w", {})
         marker_2w = spei_marker.get("extra", {}).get("spei_2w", {})

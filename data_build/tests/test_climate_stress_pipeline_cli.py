@@ -34,7 +34,9 @@ from climate_stress.pipeline import (  # noqa: E402
     _merge_severity_unit_contracts,
     _read_v3_legacy_projection,
     _read_v3_validation_projection,
+    _run_identity_from_context,
     _validate_audit_frame,
+    _validate_export_run_identity,
     _validate_spei_2w_event_row_counts,
     build_parser,
     default_handlers,
@@ -181,6 +183,104 @@ def test_scope_freezes_pilot_and_full_boundaries(tmp_path: Path) -> None:
         resolve_scope(
             config, pilot_cells=100, years=(2010,), hash_mode="pilot"
         )
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("missing_field", "empty_field", "context_mismatch"),
+)
+def test_run_identity_requires_complete_nonempty_manifest_matching_context(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    config = load_config(write_config(tmp_path))
+    scope = resolve_scope(
+        config,
+        pilot_cells=100,
+        years=None,
+        hash_mode="pilot",
+    )
+    context = initialize_run(
+        config,
+        run_id=f"run-identity-{case}",
+        parameters=scope.as_parameters(),
+        repo_root=tmp_path,
+    )
+    expected = _run_identity_from_context(context)
+    assert expected["run_id"] == context.run_id
+
+    payload = json.loads(context.manifest_path.read_text(encoding="utf-8"))
+    if case == "missing_field":
+        payload.pop("run_signature_sha256")
+    elif case == "empty_field":
+        payload["effective_config_sha256"] = " "
+    else:
+        payload["run_id"] = "different-run"
+    context.manifest_path.write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StageValidationError, match="Run manifest"):
+        _run_identity_from_context(context)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "manifest_missing_field",
+        "passport_empty_field",
+        "single_file_drift",
+        "mutually_consistent_current_run_mismatch",
+    ),
+)
+def test_validate_export_run_identity_fails_closed_on_bundle_drift(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    config = load_config(write_config(tmp_path))
+    scope = resolve_scope(
+        config,
+        pilot_cells=100,
+        years=None,
+        hash_mode="pilot",
+    )
+    context = initialize_run(
+        config,
+        run_id=f"bundle-identity-{case}",
+        parameters=scope.as_parameters(),
+        repo_root=tmp_path,
+    )
+    expected = _run_identity_from_context(context)
+    documents = {
+        "manifest": {"run_identity": dict(expected)},
+        "material_passport": {"run_identity": dict(expected)},
+        "output_contract": {"run_identity": dict(expected)},
+    }
+    assert (
+        _validate_export_run_identity(context, **documents)
+        == expected
+    )
+
+    if case == "manifest_missing_field":
+        documents["manifest"]["run_identity"].pop("environment_sha256")
+    elif case == "passport_empty_field":
+        documents["material_passport"]["run_identity"][
+            "source_tree_sha256"
+        ] = ""
+    elif case == "single_file_drift":
+        documents["output_contract"]["run_identity"][
+            "code_git_commit"
+        ] = "different-commit"
+    else:
+        for document in documents.values():
+            document["run_identity"]["run_id"] = "different-run"
+
+    with pytest.raises(
+        StageValidationError,
+        match="Export bundle run identity validation failed",
+    ):
+        _validate_export_run_identity(context, **documents)
 
 
 def test_dependency_closure_is_deterministic_and_explicit() -> None:
@@ -3573,6 +3673,35 @@ def test_cli_real_stage_chain_consumes_and_publishes_each_contract(
             encoding="utf-8"
         )
     )
+    run_manifest = json.loads(
+        (run_dir / "_RUN.json").read_text(encoding="utf-8")
+    )
+    identity_fields = (
+        "run_id",
+        "code_git_commit",
+        "run_signature_sha256",
+        "source_tree_sha256",
+        "effective_config_sha256",
+        "environment_sha256",
+    )
+    expected_run_identity = {
+        name: run_manifest[name] for name in identity_fields
+    }
+    bundle = run_dir / "stages" / "export" / "bundle"
+    passport = json.loads(
+        (bundle / "material_passport.json").read_text(encoding="utf-8")
+    )
+    output_contract = json.loads(
+        (bundle / "output_contract.json").read_text(encoding="utf-8")
+    )
+    assert manifest["run_identity"] == expected_run_identity
+    assert passport["run_identity"] == expected_run_identity
+    assert output_contract["run_identity"] == expected_run_identity
+    assert validation["gates"]["run_identity"] == {
+        "status": "PASS",
+        "fields": list(identity_fields),
+        "run_id": run_manifest["run_id"],
+    }
     for records in (manifest["outputs"], manifest["audit_artifacts"]):
         for record in records.values():
             linked = Path(record["path"])
@@ -3611,20 +3740,38 @@ def test_cli_real_stage_chain_consumes_and_publishes_each_contract(
     second_run_dir = Path(json.loads(second_stdout.getvalue())["run_dir"])
     from climate_stress.runtime import sha256_file
 
-    relative_files = (
+    deterministic_files = (
         Path("stages/assets/audit/inventory/source_inventory.json"),
         Path("stages/assets/audit/inventory/source_inventory.parquet"),
         Path("stages/export/bundle/climate_stress_long.parquet"),
         Path("stages/export/bundle/climate_stress_wide.parquet"),
         Path("stages/export/bundle/climate_stress_cube.nc"),
         Path("stages/export/bundle/climate_stress_merge_ready.dta"),
-        Path("stages/export/bundle/manifest.json"),
     )
     assert {
-        str(path): sha256_file(run_dir / path) for path in relative_files
+        str(path): sha256_file(run_dir / path) for path in deterministic_files
     } == {
-        str(path): sha256_file(second_run_dir / path) for path in relative_files
+        str(path): sha256_file(second_run_dir / path)
+        for path in deterministic_files
     }
+    second_manifest_path = (
+        second_run_dir / "stages" / "export" / "bundle" / "manifest.json"
+    )
+    second_manifest = json.loads(
+        second_manifest_path.read_text(encoding="utf-8")
+    )
+    second_run_manifest = json.loads(
+        (second_run_dir / "_RUN.json").read_text(encoding="utf-8")
+    )
+    assert second_manifest["run_identity"] == {
+        name: second_run_manifest[name] for name in identity_fields
+    }
+    assert second_manifest["run_identity"]["run_id"] != manifest[
+        "run_identity"
+    ]["run_id"]
+    assert sha256_file(second_manifest_path) != sha256_file(
+        run_dir / "stages" / "export" / "bundle" / "manifest.json"
+    )
 
 
 def test_confirmed_full_scope_fixture_publishes_and_validates_2w_contract(

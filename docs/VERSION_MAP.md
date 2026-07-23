@@ -28,7 +28,7 @@ title: 2026 年版本地图
 | data-v3-main | 2026-04-23 | reference | current_data_component | Exported the analysis main view including yield fields | Primary V3 module input | three-source-confirmed |
 | data-v3-no-yield | 2026-04-23 | reference | current_data_component | Exported the yield-missing row partition while retaining the full schema | Yield-missing row partition for non-outcome data reuse | three-source-confirmed |
 | data-v3-phenowindows | 2026-04-23 | reference | current_data_component | Preserved the full phenology-window table before export filtering | Local source for the V3 main and no-yield exports | three-source-confirmed |
-| data-climate-stress-2010-2019-v1 | 2026-07-22 | exploratory | physical_pilot_failed_quality_gate_replacement_planned | Recorded one physical pilot that reached aggregate but failed the audit quality gate, while retaining a separate planned trusted replacement pilot and keeping full execution gated | One physical pilot reached aggregate and then failed an audit Major quality gate; it is not a release result, the trusted replacement pilot remains planned_not_run, and full execution awaits that replacement pilot | single-source-inferred |
+| data-climate-stress-2010-2019-v1 | 2026-07-22 | exploratory | two_physical_pilots_failed_quality_gate_replacement_planned | Recorded two physical pilots that failed successive quality gates while retaining a separate planned trusted replacement pilot and keeping full execution gated | Two physical pilots failed successive quality gates; neither is a release result, the trusted replacement pilot remains planned_not_run, and full execution awaits that replacement pilot | single-source-inferred |
 
 ## 报告框架
 

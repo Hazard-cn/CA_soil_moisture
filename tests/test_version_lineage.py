@@ -354,7 +354,7 @@ class VersionLineageTests(unittest.TestCase):
             for row in registries["analysis_runs.csv"].rows
             if row["canonical_id"] == "data-climate-stress-2010-2019-v1"
         ]
-        self.assertEqual(len(climate_runs), 2)
+        self.assertEqual(len(climate_runs), 3)
         self.assertEqual(
             sum(
                 row["reproducibility_status"] == "planned_not_run"
@@ -367,35 +367,44 @@ class VersionLineageTests(unittest.TestCase):
                 row["reproducibility_status"] == "failed_quality_gate"
                 for row in climate_runs
             ),
-            1,
+            2,
         )
-        failed = next(
-            row
+        failed_runs = {
+            row["analysis_run_id"]: row
             for row in climate_runs
             if row["reproducibility_status"] == "failed_quality_gate"
-        )
+        }
         self.assertEqual(
-            failed["analysis_run_id"],
-            "run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001",
+            set(failed_runs),
+            {
+                "run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001",
+                "run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913",
+            },
         )
-        self.assertEqual(failed["input_artifact_ids"], run["input_artifact_ids"])
-        for field in (
-            "method_id",
-            "entrypoint",
-            "parameter_manifest",
-            "environment_lock",
-        ):
-            self.assertEqual(failed[field], run[field])
-        self.assertEqual(
-            failed["code_git_sha"],
-            "82cbbf80aa1a9280731cfaf24ba1fd4bd079f6aa",
-        )
-        self.assertEqual(
-            failed["run_started_at"],
-            "2026-07-23T00:50:12.816656Z",
-        )
-        for field in ("result_manifest", "public_result", "run_completed_at"):
-            self.assertEqual(failed[field], "")
+        expected_failed_execution = {
+            "run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001": (
+                "82cbbf80aa1a9280731cfaf24ba1fd4bd079f6aa",
+                "2026-07-23T00:50:12.816656Z",
+            ),
+            "run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913": (
+                "46800627b7bab0e94a96eaff524c450cf98916e9",
+                "2026-07-23T05:53:24.927504Z",
+            ),
+        }
+        for run_id, (code_sha, started_at) in expected_failed_execution.items():
+            failed = failed_runs[run_id]
+            self.assertEqual(failed["input_artifact_ids"], run["input_artifact_ids"])
+            for field in (
+                "method_id",
+                "entrypoint",
+                "parameter_manifest",
+                "environment_lock",
+            ):
+                self.assertEqual(failed[field], run[field])
+            self.assertEqual(failed["code_git_sha"], code_sha)
+            self.assertEqual(failed["run_started_at"], started_at)
+            for field in ("result_manifest", "public_result", "run_completed_at"):
+                self.assertEqual(failed[field], "")
 
         artifacts = {
             row["artifact_id"]: row

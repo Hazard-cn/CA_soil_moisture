@@ -46,6 +46,14 @@ WIDE_KEY_COLUMNS = SPATIAL_COLUMNS + ("year",)
 STATA_PUBLIC_KEYS = frozenset(WIDE_KEY_COLUMNS)
 STATA_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+RUN_IDENTITY_FIELDS = (
+    "run_id",
+    "code_git_commit",
+    "run_signature_sha256",
+    "source_tree_sha256",
+    "effective_config_sha256",
+    "environment_sha256",
+)
 VARIABLE_METADATA_FIELDS = (
     "long_name",
     "units",
@@ -78,6 +86,25 @@ def _validate_output_scope(scope_id: str, scope_status: str) -> tuple[str, str]:
     if status == "PARTIAL_SCOPE" and identifier == "full-spei2w-dual-severity":
         raise ValueError("PARTIAL_SCOPE cannot use the full scope identifier")
     return identifier, status
+
+
+def _validate_run_identity(run_identity: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(run_identity, Mapping):
+        raise TypeError("run_identity must be a mapping")
+    missing = sorted(set(RUN_IDENTITY_FIELDS).difference(run_identity))
+    if missing:
+        raise ValueError(f"run_identity lacks required fields: {missing}")
+    normalized: dict[str, Any] = {}
+    empty = []
+    for field in RUN_IDENTITY_FIELDS:
+        value = run_identity[field]
+        if value is None or not str(value).strip():
+            empty.append(field)
+            continue
+        normalized[field] = str(value).strip()
+    if empty:
+        raise ValueError(f"run_identity has empty required fields: {sorted(empty)}")
+    return normalized
 
 
 def _validate_spei_2w_evidence(
@@ -160,6 +187,8 @@ def _infer_units(name: str) -> str:
         return "1"
     if name.endswith("_doy") or "window_start_doy" in lower or "window_end_doy" in lower:
         return "day of year"
+    if "coverage" in lower or lower.endswith("_fraction") or lower.endswith("_share"):
+        return "1"
     if lower.startswith("chm_spei_"):
         if "2w" in lower:
             if "releases_equiv" in lower:
@@ -222,8 +251,6 @@ def _infer_units(name: str) -> str:
             return "count"
         if any(token in lower for token in ("tmean", "tmax", "tmin", "intensity", "temperature")):
             return "degree_Celsius"
-    if "coverage" in lower or lower.endswith("_fraction") or lower.endswith("_share"):
-        return "1"
     if any(token in lower for token in ("_any", "_flag", "censored", "_valid")):
         return "1"
     if any(token in lower for token in ("_count", "events", "event_count", "pixel_count")):
@@ -550,6 +577,7 @@ class ExportPaths:
     variable_dictionary_csv: Path
     variable_dictionary_md: Path
     material_passport: Path
+    output_contract: Path
     manifest: Path
 
     @classmethod
@@ -565,6 +593,7 @@ class ExportPaths:
             variable_dictionary_csv=root / "variable_dictionary.csv",
             variable_dictionary_md=root / "variable_dictionary.md",
             material_passport=root / "material_passport.json",
+            output_contract=root / "output_contract.json",
             manifest=root / "manifest.json",
         )
 
@@ -1733,6 +1762,7 @@ def build_material_passport(
     long_panel: pd.DataFrame,
     *,
     version_id: str,
+    run_identity: Mapping[str, Any],
     sources: Mapping[str, Any],
     transformations: Mapping[str, Any] | None = None,
     quality: Mapping[str, Any] | None = None,
@@ -1743,9 +1773,11 @@ def build_material_passport(
     spei_2w_numeric_executed: bool,
     spei_2w_output_included: bool,
 ) -> dict[str, Any]:
+    normalized_run_identity = _validate_run_identity(run_identity)
     return {
         "material_passport_version": "1.0",
         "artifact_id": version_id,
+        "run_identity": normalized_run_identity,
         "scope_id": str(scope_id),
         "status": str(scope_status),
         "entity": "selected 0.1-degree grid x calendar year x phenological window",
@@ -1785,6 +1817,7 @@ def write_json_exclusive(value: Mapping[str, Any], path: str | Path) -> Path:
 def build_manifest(
     *,
     version_id: str,
+    run_identity: Mapping[str, Any],
     config_path: str | Path,
     outputs: Mapping[str, str | Path],
     inputs: Mapping[str, str | Path] | None = None,
@@ -1795,6 +1828,7 @@ def build_manifest(
     config_sha256: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_run_identity = _validate_run_identity(run_identity)
     config = Path(config_path)
     if (inputs is None) == (input_records is None):
         raise ValueError("Provide exactly one of inputs or input_records")
@@ -1810,6 +1844,7 @@ def build_manifest(
     return {
         "manifest_version": "1.0",
         "version_id": version_id,
+        "run_identity": normalized_run_identity,
         "config": {
             "path": str(config.resolve()),
             "bytes": config.stat().st_size,
@@ -1827,6 +1862,7 @@ def export_panel_bundle(
     output_directory: str | Path,
     *,
     config_path: str | Path,
+    run_identity: Mapping[str, Any],
     inputs: Mapping[str, str | Path] | None = None,
     input_records: Mapping[str, Mapping[str, Any]] | None = None,
     audit_artifacts: Mapping[str, str | Path] | None = None,
@@ -1853,6 +1889,7 @@ def export_panel_bundle(
 ) -> tuple[ExportPaths, pd.DataFrame, pd.DataFrame]:
     """Write the complete canonical package after a no-overwrite preflight."""
 
+    normalized_run_identity = _validate_run_identity(run_identity)
     scope_id, scope_status = _validate_output_scope(scope_id, scope_status)
     normalized_2w_evidence = _validate_spei_2w_evidence(
         spei_2w_evidence,
@@ -1921,9 +1958,35 @@ def export_panel_bundle(
     write_variable_dictionary(
         dictionary, paths.variable_dictionary_csv, paths.variable_dictionary_md
     )
+    scope_contract = {
+        "contract_version": 1,
+        "version_id": version_id,
+        "run_identity": normalized_run_identity,
+        "scope_id": str(scope_id),
+        "status": str(scope_status),
+        "spei_2w": {
+            "numeric_executed": bool(spei_2w_numeric_executed),
+            "output_included": bool(spei_2w_output_included),
+            "accumulation_support": normalized_2w_evidence[
+                "accumulation_support"
+            ],
+            "event_state_support": normalized_2w_evidence[
+                "event_state_support"
+            ],
+            "canonical_field_count": len(two_week_columns),
+            "stage_evidence": normalized_2w_evidence,
+        },
+        "compound_severity": {
+            "heat_excess_field_suffix": "heat_excess_cdays",
+            "soil_deficit_field_suffix": "sm_deficit_m3m3_days",
+            "mixed_unit_scalar_included": False,
+        },
+    }
+    write_json_exclusive(scope_contract, paths.output_contract)
     passport = build_material_passport(
         long,
         version_id=version_id,
+        run_identity=normalized_run_identity,
         sources=sources or inputs,
         transformations=transformations,
         quality=quality,
@@ -1949,6 +2012,7 @@ def export_panel_bundle(
         }
     manifest = build_manifest(
         version_id=version_id,
+        run_identity=normalized_run_identity,
         config_path=config_path,
         inputs=inputs,
         input_records=input_records,
@@ -2023,6 +2087,7 @@ def export_panel_bundle_streaming(
     output_directory: str | Path,
     *,
     config_path: str | Path,
+    run_identity: Mapping[str, Any],
     inputs: Mapping[str, str | Path] | None = None,
     input_records: Mapping[str, Mapping[str, Any]] | None = None,
     audit_artifacts: Mapping[str, str | Path] | None = None,
@@ -2052,6 +2117,7 @@ def export_panel_bundle_streaming(
 
     from .spei import combine_parquet_partitions_new
 
+    normalized_run_identity = _validate_run_identity(run_identity)
     scope_id, scope_status = _validate_output_scope(scope_id, scope_status)
     normalized_2w_evidence = _validate_spei_2w_evidence(
         spei_2w_evidence,
@@ -2063,10 +2129,9 @@ def export_panel_bundle_streaming(
         raise ValueError("Streaming bundle currently requires zstd Parquet compression")
     paths = ExportPaths.in_directory(output_directory)
     wide_partition_root = Path(output_directory) / "wide_partitions"
-    output_contract_path = Path(output_directory) / "output_contract.json"
     conflicts = [
         path
-        for path in (*paths.all(), wide_partition_root, output_contract_path)
+        for path in (*paths.all(), wide_partition_root)
         if path.exists()
     ]
     if conflicts:
@@ -2187,6 +2252,7 @@ def export_panel_bundle_streaming(
     scope_contract = {
         "contract_version": 1,
         "version_id": version_id,
+        "run_identity": normalized_run_identity,
         "scope_id": str(scope_id),
         "status": str(scope_status),
         "spei_2w": {
@@ -2208,10 +2274,11 @@ def export_panel_bundle_streaming(
         },
         "streaming_contract": streaming_contract,
     }
-    write_json_exclusive(scope_contract, output_contract_path)
+    write_json_exclusive(scope_contract, paths.output_contract)
     passport = {
         "material_passport_version": "1.0",
         "artifact_id": version_id,
+        "run_identity": normalized_run_identity,
         "scope_id": str(scope_id),
         "status": str(scope_status),
         "entity": "selected 0.1-degree grid x calendar year x phenological window",
@@ -2249,7 +2316,6 @@ def export_panel_bundle_streaming(
         if field != "manifest"
     }
     output_records["wide_partitions"] = wide_partition_root
-    output_records["output_contract"] = output_contract_path
     output_record_paths = None
     if published_output_directory is not None:
         output_root = Path(output_directory)
@@ -2260,6 +2326,7 @@ def export_panel_bundle_streaming(
         }
     manifest = build_manifest(
         version_id=version_id,
+        run_identity=normalized_run_identity,
         config_path=config_path,
         inputs=inputs,
         input_records=input_records,
@@ -2289,6 +2356,6 @@ def export_panel_bundle_streaming(
         "wide_rows": expected_wide_rows,
         "selected_cells": int(contract["selected_cells"]),
         "wide_partitions": wide_partition_root,
-        "output_contract": output_contract_path,
+        "output_contract": paths.output_contract,
         "streaming_contract": streaming_contract,
     }
