@@ -2,7 +2,7 @@
 
 ## 当前范围状态
 
-当前正式配置的 `scope_profile` 为 `full-spei2w-dual-severity`，运行、阶段标记和质量摘要必须记录 `completion_scope_status=FULL_SCOPE`，SPEI-2W 数值计算与输出契约均为 `true`。用户于 2026-07-22 确认端点A：标签值的14日累积支持为闭区间 `[label-13,label]`，事件状态为闭区间 `[label,label+6]`。复合事件继续保留热超额与土壤水亏缺两套独立 severity，不生成混合量纲标量。配置和端点合同已经闭合不等于真实运行已经完成；旧候选run已经启动但不构成可信正式pilot，可信100格点pilot及full均未完成，当前不得声称完整v1数据产物已经生成。
+当前正式配置的 `scope_profile` 为 `full-spei2w-dual-severity`，运行、阶段标记和质量摘要必须记录 `completion_scope_status=FULL_SCOPE`，SPEI-2W 数值计算与输出契约均为 `true`。用户于 2026-07-22 确认端点A：标签值的14日累积支持为闭区间 `[label-13,label]`，事件状态为闭区间 `[label,label+6]`。复合事件继续保留热超额与土壤水亏缺两套独立 severity，不生成混合量纲标量。100格点×2010/2016/2019技术pilot已由修复后的完整standalone validator对既有冻结bundle验证为`PASS`；原pipeline资源失败审计和缺少validate `_SUCCESS`的事实保持不变。full仍为`NOT_RUN`，public result未发布，不得声称完整2010—2019 v1数据已经生成。
 
 2026-07-22治理停止线：历史候选run `pilot-fullscope-a-20260722T202653`虽已执行部分阶段，但创建和推进发生在初始化失败审计链修复前，不构成可信正式pilot证据。该run及其现有文件只读保留，不回填后补审计，不使用`--resume`续跑，也不把其阶段标记升级为完整v1验收证据。相关修复通过测试与独立复审后，可信100格点pilot必须使用新的唯一run-id，从`assets`开始完整执行，并由新run自身生成初始化、阶段、资源、质量和validate证据；full仍须等待该新pilot通过。
 
@@ -10,7 +10,7 @@
 
 2026-07-23导出元数据停止线：run `pilot-fullscope-a-aggfix-20260723T054913`真实关闭aggregate审计接口问题并执行至`export`，但四个ERA coverage变量单位被误标为温度，三份bundle身份文件又缺少共同六字段`run_identity`，因此登记为`failed_quality_gate`且不运行`validate`。其export `_SUCCESS.json`不是最终result manifest。
 
-2026-07-23验证资源停止线：run `pilot-fullscope-a-exportfix-20260723T112218Z`真实关闭上述导出元数据问题，并完成全部379个指标、18个year-window分区、四格式和全部非目标格值的数值比较；partial报告内部PASS且格式最大差为0，但validate进程峰值`9,068,961,792`字节超过冻结4 GiB，阶段没有发布`_SUCCESS.json`。资源门优先，该run及partial只读保留、不得`--resume`；当前修复仅把完整NetCDF验证改为按指标批次关闭Dataset并限制每变量chunk cache，不减少验证覆盖、不抽样、不提高预算。可信pilot须在修复提交后使用新的唯一run-id从`assets`重做。
+2026-07-23验证资源与post-fix裁决：run `pilot-fullscope-a-exportfix-20260723T112218Z`真实关闭上述导出元数据问题，并完成全部379个指标、18个year-window分区、四格式和全部非目标格值的数值比较；原validate进程峰值`9,068,961,792`字节超过冻结4 GiB，阶段没有发布`_SUCCESS.json`。修复后的完整standalone validator随后只读复验同一bundle，仍检查379指标、四格式和`1,579,402,152`个非目标格值，格式最大差均为0，进程峰值降为`203,075,584`字节。用户确认该post-fix结果作为技术pilot `PASS`并复用既有工作，不再重跑数据阶段。原run及partial只读保留、不得`--resume`或补写；独立证据见[post-fix验证记录](../../quality_reports/file_inventory/2026-07-23_climate_stress_postfix_standalone_validation.md)。后续`pilot-fullscope-a-memoryfix-20260723T144003Z`仅完成assets/grid后停止，不作为技术PASS的数值来源。
 
 ## 环境与路径
 
@@ -43,7 +43,7 @@
 & .\data_build\scripts\powershell\run_climate_stress_panel.ps1 -Stage assets -RunId preflight-001 -PilotCells 100 -HashMode pilot
 ```
 
-以下pilot、full和断点续跑命令仅是后续运行示例；ERA 1980/1985/1986修复输入虽已闭合，但当前validate资源修复轮不得创建或运行新pilot，旧候选run也不得用这些命令续跑：
+以下pilot、full和断点续跑命令仅是接口示例；当前技术pilot已按用户裁决复用既有bundle完成post-fix验证，不应使用这些命令重复运行pilot。full尚未授权执行，旧候选run不得用这些命令续跑：
 
 ```powershell
 # 冻结 pilot：100 cells，配置中的 pilot years
@@ -66,7 +66,7 @@
 
 截至 2026-07-22，GLEAM 2020 的 SMrz/SMs 输入、ERA 1980/1985/1986修复输入和SPEI-2W端点A均已闭合；端点不再构成`spei_2w_only`范围限制。repair与legacy ERA文件的坐标轴仅存在浮点表示差时，跨文件一致性按形状相同且`rtol=0, atol=quality.coordinate_tolerance=1e-8`判断；每个文件到目标子网格仍逐坐标执行严格`1e-8`验证。输入事实已闭合；旧候选run不续跑，可信100格点pilot须在审计链修复和复审通过后使用新run-id执行，full尚未启动，本入口不会自行触发下载或运行。
 
-截至2026-07-23，输入事实仍保持闭合；aggregate事件审计接口与export元数据合同已经在后续物理run中真实关闭，当前唯一阻断是完整NetCDF验证的进程峰值超过冻结4 GiB。修复期间禁止运行任何数据stage；既有候选run及partial均只读保留，下一次可信pilot仍须使用新run-id从`assets`开始。
+截至2026-07-23，输入事实仍保持闭合；aggregate事件审计接口与export元数据合同已经在后续物理run中真实关闭。冻结的exportfix bundle已由修复后的完整验证器在203,075,584 B进程峰值下完成379个指标、18个年份—窗口分区、全部非目标格及四格式往返校验，技术pilot据此判定为PASS；原run中的超内存validate invocation及其无`_SUCCESS.json`状态继续只读保留，不回填、不改写。后续memoryfix run按用户决定在assets/grid后停止，不再重复已完成的数据计算。当前尚未完成的工作仅为full run与公开发布。
 
 ## 2026-07-22 增量确认状态
 

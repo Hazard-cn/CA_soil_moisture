@@ -5,12 +5,12 @@
 - [x] 实现分阶段可恢复CLI、运行锁和资源门禁
 - [x] 实现`full-spei2w-dual-severity`范围内的核心算法、流式聚合和导出，并保留`PARTIAL_SCOPE`负向门禁
 - [x] 完成候选提交单元测试与“合成上游合同＋生产下游完整DAG”集成测试；当前测试结果见本计划末尾验收段
-- [ ] 完成100格点×2010/2016/2019可信pilot（`NEW_RUN_REQUIRED_AFTER_VALIDATE_MEMORY_FIX`；三条已登记物理run均为只读`failed_quality_gate`，规范可信替代run仍为`NOT_RUN / planned_not_run`）
-- [ ] 完成全量2010—2019构建与格式导出（仅受真实pilot尚未完成的门禁阻断）
+- [x] 完成100格点×2010/2016/2019技术pilot验证（既有`exportfix` bundle经修复后的完整standalone validator以203,075,584字节峰值通过；原pipeline资源失败审计保持不变）
+- [ ] 完成全量2010—2019构建与格式导出（技术pilot已PASS；full仍为`NOT_RUN`）
 - [ ] 归档独立事实、方法和代码终审（代码/方法审查已执行，发布终审待真实pilot）
 - [x] 更新端点决定与版本谱系；候选提交的实际index仓库政策检查已通过
 
-实施规范以用户于 2026-07-22 批准的 `data-climate-stress-2010-2019-v1` 方案及端点A决定为准；原始数据只读，所有大体量产物写入仓库外不可覆盖运行目录。当前validate NetCDF cache与资源修复轮只修改代码、测试、谱系和计划状态，不续跑旧候选run、不创建新run、不写外部数据。
+实施规范以用户于 2026-07-22 批准的 `data-climate-stress-2010-2019-v1` 方案及端点A决定为准；原始数据只读，所有大体量产物写入仓库外不可覆盖运行目录。用户于2026-07-23进一步裁决：既有`exportfix` bundle经修复后的完整standalone validator在4 GiB内通过后，技术pilot按PASS处理并直接复用，不再从assets重复执行全部数据阶段；原资源失败run及partial仍只读保留。
 
 ## 2026-07-22 实施状态
 
@@ -54,10 +54,18 @@
 - 资源门优先于partial数据报告。该partial报告、export `_SUCCESS`和任何单阶段结果均不登记为最终result manifest；本run登记为`failed_quality_gate`，`result_manifest`、`public_result`和`run_completed_at`保持空。
 - 根因是379个NetCDF cube变量在单一长期打开Dataset中累积默认64 MiB变量chunk cache。当前仅允许将完整NetCDF比较改为按指标批次打开和关闭Dataset，并对实际访问变量设置1 MiB cache上限；不得减少指标、跳过非目标格、抽样替代完整比较或提高4 GiB预算。该run及partial永久只读、不补写、不覆盖、不再`--resume`；修复后须使用新的唯一run-id从`assets`重做。
 
+## 2026-07-23 post-fix完整验证与用户复用裁决
+
+- 修复后的`validate_export_bundle_full`直接只读验证`pilot-fullscope-a-exportfix-20260723T112218Z`已经冻结的aggregate/export bundle，不重算任何气候数据，也不写旧run。
+- 验证保持379指标、18个year-window分区、四格式及`1,579,402,152`个非目标格值完整覆盖；四格式最大差均为0。NetCDF按48个Dataset批次执行，每批最多8指标，每变量cache不超过1 MiB，进程峰值为`203,075,584`字节。
+- 用户明确确认：先前失败来自旧validator资源实现；同一bundle经修复后的完整小内存验证通过后，技术pilot应判`PASS`并复用已完成工作，不再要求数据阶段重跑。该决定登记为`decision-climate-stress-postfix-validation-20260723`。
+- 原`exportfix`物理run继续登记为`failed_quality_gate`，保留`FAILED_RESOURCE`、partial与无validate `_SUCCESS`事实；新增独立`verified_current` post-fix验证run指向仓库内证据，不伪造原stage历史。
+- 后续曾创建的`pilot-fullscope-a-memoryfix-20260723T144003Z`仅完成assets/grid后停止，不再`resume`，不作为技术PASS的数值来源。规范`planned_not_run`行作为已被用户裁决替代的历史计划占位保留。full仍为`NOT_RUN`，public result未发布。
+
 ## 两级pilot与输出契约
 
 - A级`non2w-dual-severity/PARTIAL_SCOPE`现仅保留为负向兼容和fail-closed测试合同：2W数值链和字段禁用，不能作为正式配置，也不能替代完整pilot。
-- B级`full-spei2w-dual-severity/FULL_SCOPE`是正式`data-climate-stress-2010-2019-v1`合同：双独立severity保持不变，SPEI-2W采用端点A。只有真实pilot完成且输入、资源、往返、审计和manifest门禁全部通过后，才能声明完整v1运行通过。
+- B级`full-spei2w-dual-severity/FULL_SCOPE`是正式`data-climate-stress-2010-2019-v1`合同：双独立severity保持不变，SPEI-2W采用端点A。当前100格点技术pilot已由post-fix完整standalone验证判PASS；这不生成原pipeline validate `_SUCCESS`，也不表示full运行或public发布完成。
 
 ## 2026-07-22 增量状态：端点A已确认
 

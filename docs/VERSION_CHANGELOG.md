@@ -1416,7 +1416,7 @@ drought-only Model 8；mediator和yield两方程；baseline-local、pooled-state
 |---|---|---|---|
 | `regional-threshold-sr-v1` | 2026-07-14 | `reference` | Audited the official continuous maize heat-damage threshold before any yield model and stopped at the frozen five-zone coverage gate |
 | `compound-event-intensity-duration-v1` | 2026-07-15 | `reference` | Designed the hot-dry event intensity-duration and soil-moisture timing interface, then stopped after the second small-smoke review retained a reproducibility Major |
-| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Recorded three physical pilots that stopped at successive event-audit, export-metadata, and validate-resource quality gates while retaining a separate planned trusted replacement pilot and keeping full execution gated |
+| `data-climate-stress-2010-2019-v1` | 2026-07-22 | `exploratory` | Accepted the frozen exportfix bundle as the technical 100-grid pilot after the complete post-fix standalone validator passed under the 4 GiB budget; no data stage was rerun and full remains not run |
 
 ### 方法变化
 
@@ -2882,12 +2882,12 @@ small smoke使用V3面板及2016-2019对齐Tmax、降水、GLEAM SMrz；仅40个
 |---|---|
 | 时间与状态 | 2026-07-22；`exploratory`；`logical_data_version` |
 | 父版/取代关系 | parent=`data-v3-main`；supersedes=`none` |
-| 当前用途 | Three physical pilots stopped at successive quality gates; none is a release result, the trusted replacement pilot remains planned_not_run, and full execution awaits that replacement pilot；truth role=`three_physical_pilots_failed_quality_gate_replacement_planned` |
+| 当前用途 | Technical pilot validation PASS via complete post-fix standalone validation; original pipeline validate invocation remains FAILED_RESOURCE, formal validate stage SUCCESS does not exist, full is NOT_RUN, and no public result is published；truth role=`technical_pilot_validation_pass_postfix_standalone` |
 | 证据 | `single-source-inferred`；关联脱敏对话 1 个 |
 
 ### 数据变化
 
-V3 main/phenowindows、ERA修复、daily validation、GLEAM、CHM monthly/2W与逐年物候八类输入已绑定到三个物理run；第一个生成至aggregate后因event_audit接口Major停止，第二个修复该接口并生成至export后因coverage单位与run_identity元数据问题停止，第三个真实关闭export元数据问题并执行完整validate数值比较，但进程峰值9,068,961,792字节超过冻结4 GiB且未发布validate SUCCESS；三者均不登记为发布结果，替代可信pilot仍未执行
+V3 main/phenowindows、ERA修复、daily validation、GLEAM、CHM monthly/2W与逐年物候八类输入已绑定到既有exportfix bundle；该bundle的379个指标、18个year-window分区、四格式及全部非目标格值由修复后的standalone validator完整复验，四格式最大差为0且峰值203,075,584字节。技术pilot判PASS；未重算数据，full仍为NOT_RUN
 
 关联 artifact：
 
@@ -2899,14 +2899,14 @@ V3 main/phenowindows、ERA修复、daily validation、GLEAM、CHM monthly/2W与�
 | `climate-stress-chm-spei-2w` | raw-input | present | 3235×1 | `external://chm-drought-v1/SPEI/CHM_SPEI-2W.nc` |
 | `climate-stress-daily-temperature-validation-2013-2019` | raw-input | present | 2556×3 | `external://daily-temp-cn/daily_temp_{2013..2019}.nc` |
 | `climate-stress-maize-phenology-2010-2019` | raw-input | present | 未记录 | `external://china-crop-phenology-1km/maize/CHN_Maize_{V3,HE,MA}_{2010..2019}.tif` |
-| `data-climate-stress-panel-v1-pilot-output` | data-build-snapshot | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{pilot-run-id}/panel-bundle` |
+| `data-climate-stress-panel-v1-pilot-output` | data-build-snapshot | present | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/pilot-fullscope-a-exportfix-20260723T112218Z/stages/export/bundle/manifest.json` |
 | `data-climate-stress-panel-v1-full-output` | data-build-snapshot | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{full-run-id}/panel-bundle` |
 | `data-climate-stress-panel-v1-pilot-manifest` | result-manifest | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{pilot-run-id}/manifest.json` |
 | `data-climate-stress-panel-v1-full-manifest` | result-manifest | missing | 未记录 | `external://climate-stress-panel-runs/data-climate-stress-2010-2019-v1/{full-run-id}/manifest.json` |
 
 ### 方法变化
 
-ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件轴按形状相同且rtol=0、atol=1e-8校验，每文件目标子网格仍严格1e-8；CHM SPEI沿用原生标准化且拟合参考期unknown；SPEI-2W端点A确认为14日累积闭区间[label-13,label]和7日状态闭区间[label,label+6]，主版为K=-1至少1个发布状态、严格版为K=-1.5连续至少3个7日发布状态；复合事件仅分别输出heat excess和soil-moisture deficit severity，不合成混合量纲标量；validate必须在不减少指标、非目标格或四格式比较的前提下满足4 GiB资源门
+ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件轴按形状相同且rtol=0、atol=1e-8校验，每文件目标子网格仍严格1e-8；CHM SPEI沿用原生标准化且拟合参考期unknown；SPEI-2W端点A为累积[label-13,label]和状态[label,label+6]；复合事件仅输出heat excess和soil-moisture deficit两套独立severity。post-fix validator按48个Dataset批次、每批最多8指标、每变量cache不超过1 MiB完成全部比较
 
 #### `method-data-climate-stress-panel-v1`
 
@@ -2919,7 +2919,7 @@ ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件�
 
 ### 结果呈现变化
 
-新增第三个独立物理run登记并标记failed_quality_gate；三个run的result manifest、public result与完成时间均保持空，aggregate/export SUCCESS及partial validation PASS均不等于pipeline质量门通过或可发布结果；替代可信pilot继续以planned_not_run单独登记
+新增独立verified_current post-fix验证记录与仓库内证据；原exportfix物理run继续为failed_quality_gate，保留FAILED_RESOURCE、partial及无validate SUCCESS事实，不补写原run。memoryfix run在assets/grid后因用户复用裁决停止
 
 关联运行与结果载体：
 
@@ -2929,8 +2929,9 @@ ERA5温度与GLEAM百分位历史期固定为1981-2010；repair/legacy跨文件�
 | `run-data-climate-stress-panel-v1-pilot-fullscope-a-auditfix-20260723T000001` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | failed_quality_gate |
 | `run-data-climate-stress-panel-v1-pilot-fullscope-a-aggfix-20260723T054913` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | failed_quality_gate |
 | `run-data-climate-stress-panel-v1-pilot-fullscope-a-exportfix-20260723T112218Z` | `data-v3-expanded-main\|data-v3-expanded-phenowindows\|climate-stress-era5-repair-required-v1\|climate-stress-daily-temperature-validation-2013-2019\|climate-stress-gleam43a-2020-sm-bundle\|climate-stress-chm-spei-monthly-bundle\|climate-stress-chm-spei-2w\|climate-stress-maize-phenology-2010-2019` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/build_climate_stress_panel.py` | `未冻结` | `未公开` | failed_quality_gate |
+| `run-data-climate-stress-panel-v1-postfix-standalone-validation-20260723T140353Z` | `data-climate-stress-panel-v1-pilot-output` | `未冻结` | `method-data-climate-stress-panel-v1` | `repo://data_build/scripts/python/climate_stress/validate.py` | `repo://quality_reports/file_inventory/2026-07-23_climate_stress_postfix_standalone_validation.md` | `未公开` | verified_current |
 
 ### 相对前版与证据边界
 
-- 综合变化：Recorded three physical pilots that stopped at successive event-audit, export-metadata, and validate-resource quality gates while retaining a separate planned trusted replacement pilot and keeping full execution gated
-- 证据限制：The physical run pilot-fullscope-a-auditfix-20260723T000001 reached aggregate and failed the event-audit quality gate. The physical run pilot-fullscope-a-aggfix-20260723T054913 fixed aggregate, reached export, and failed the export metadata quality gate. The physical run pilot-fullscope-a-exportfix-20260723T112218Z fixed export metadata and completed the full numeric validation logic, but its validate process exceeded the frozen 4 GiB budget and published no validate SUCCESS. Partial validation PASS is not a result manifest. All three physical runs are non-publishable; the separate replacement pilot remains planned_not_run.
+- 综合变化：Accepted the frozen exportfix bundle as the technical 100-grid pilot after the complete post-fix standalone validator passed under the 4 GiB budget; no data stage was rerun and full remains not run
+- 证据限制：User decision decision-climate-stress-postfix-validation-20260723 accepts the existing exportfix bundle after the complete fixed-validator run passed at 203,075,584 bytes. The original exportfix run remains failed_quality_gate with empty result/public/completion fields and no validate SUCCESS. The planned_not_run row is retained as a superseded historical plan placeholder. The memoryfix run stopped after assets/grid and is not the numeric source. Full execution and public release have not occurred.
