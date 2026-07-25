@@ -354,7 +354,7 @@ class VersionLineageTests(unittest.TestCase):
             for row in registries["analysis_runs.csv"].rows
             if row["canonical_id"] == "data-climate-stress-2010-2019-v1"
         ]
-        self.assertEqual(len(climate_runs), 4)
+        self.assertEqual(len(climate_runs), 5)
         self.assertEqual(
             sum(
                 row["reproducibility_status"] == "planned_not_run"
@@ -368,6 +368,17 @@ class VersionLineageTests(unittest.TestCase):
                 for row in climate_runs
             ),
             3,
+        )
+        verified_runs = {
+            row["analysis_run_id"]: row
+            for row in climate_runs
+            if row["reproducibility_status"] == "verified_current"
+        }
+        self.assertEqual(
+            set(verified_runs),
+            {
+                "run-data-climate-stress-panel-v1-postfix-standalone-validation-20260723T140353Z"
+            },
         )
         failed_runs = {
             row["analysis_run_id"]: row
@@ -417,7 +428,7 @@ class VersionLineageTests(unittest.TestCase):
         )
         self.assertEqual(
             version["current_truth_role"],
-            "three_physical_pilots_failed_quality_gate_replacement_planned",
+            "technical_pilot_validation_pass_postfix_standalone",
         )
         self.assertEqual(version["result_run_date"], "")
 
@@ -434,17 +445,15 @@ class VersionLineageTests(unittest.TestCase):
             for row in registries["data_lineage.csv"].rows
             if row["verification_status"] == "single-source-inferred"
         }
-        direct_planned_inputs = expected_inputs.difference(
-            {
-                "climate-stress-era5-repair-required-v1",
-                "climate-stress-gleam43a-2020-sm-bundle",
-                "data-v3-expanded-main",
-            }
-        )
-        for artifact_id in direct_planned_inputs:
+        supported_pairs = {
+            (row["input_artifact_id"], row["output_artifact_id"])
+            for row in registries["data_lineage.csv"].rows
+            if row["verification_status"] == "two-source-supported"
+        }
+        for artifact_id in expected_inputs:
             self.assertIn(
                 (artifact_id, "data-climate-stress-panel-v1-pilot-output"),
-                planned_pairs,
+                supported_pairs,
             )
             self.assertIn(
                 (artifact_id, "data-climate-stress-panel-v1-full-output"),
@@ -455,7 +464,7 @@ class VersionLineageTests(unittest.TestCase):
                 "data-climate-stress-panel-v1-pilot-output",
                 "data-climate-stress-panel-v1-pilot-manifest",
             ),
-            planned_pairs,
+            supported_pairs,
         )
         self.assertIn(
             (
